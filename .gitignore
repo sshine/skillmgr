@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/target/
+*.snap
+
+# Nix
+/.direnv/
+/result
+/hk.pkl
+
+# Release artifacts
+/dist/
+
+# Scratch
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+\#*\#
+.*.swp
+.DS_Store

@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/skillmgr-core",
+  "crates/skillmgr-cli",
+  "crates/skillmgr-tui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sshine/skillmgr"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+
+[workspace.dependencies]
+skillmgr-core = { version = "0.1.0", path = "crates/skillmgr-core" }
+skillmgr-tui = { version = "0.1.0", path = "crates/skillmgr-tui" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml_edit = { version = "0.22", features = ["serde"] }
+thiserror = "2"
+tempfile = "3"
+tar = "0.4"
+walkdir = "2"
+sha2 = "0.10"
+rayon = "1"
+url = "2"
+
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4.5"
+
+promptui-core = { git = "https://github.com/sshine/promptui", rev = "48e0533e8fa487b4a27a6a18dd9f672685416926" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+unicode-width = "0.2"
+
+assert_cmd = "2"
+predicates = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
