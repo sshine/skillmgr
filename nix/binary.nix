@@ -22,7 +22,8 @@
       release = {
         version = "0.1.0";
         hashes = {
-          # Filled by `just release-hashes v0.1.0` after the first release.
+          "x86_64-linux" = "sha256-ijvtTTVrxZBUcZ6Qm7VPw8k9y/1w5Ercwq2nvAcp8hM=";
+          "aarch64-linux" = "sha256-gjGkXbUVZG+PExRN3XMM42W8T0RljllnFYxQ9nL15QA=";
         };
       };
 
