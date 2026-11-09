@@ -35,8 +35,8 @@
             check = "cargo clippy --all-targets --all-features -- -D warnings";
           };
           readme = {
-            check = "${readme} | diff - README.md";
-            fix = "${readme} > README.md";
+            check = "${readme} | mdformat - | diff - README.md";
+            fix = "${readme} | mdformat - > README.md";
           };
           lock-check = {
             check = "cargo metadata --locked --format-version 1 > /dev/null";
