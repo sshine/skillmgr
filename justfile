@@ -58,6 +58,7 @@ check-version version:
 dist version: (check-version version)
     rm -rf dist && mkdir -p dist
     for target in {{release_targets}}; do \
+        set -e; \
         cargo build --release --locked --target "$target" -p skillmgr-cli; \
         name="skillmgr-{{version}}-$target"; \
         tar -czf "dist/$name.tar.gz" -C "target/$target/release" skillmgr; \
