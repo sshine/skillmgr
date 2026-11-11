@@ -66,6 +66,12 @@
 //! conventions, not hardcoded behaviour. An entry with `repo`, `path`, `branch` and
 //! `rev` is vendored. Anything else is authored.
 //!
+//! A repository that contains `SKILL.md` files anywhere is a skills collection:
+//! adding it discovers and vendors every skill. An entry with `repo` and `path` but
+//! no complete pin is a repository declaration. It may be unreachable or contain no
+//! skills; either way it stays in the registry as a faulty entry that a later
+//! retry can resolve, and it never blocks operations on healthy skills.
+//!
 //! ## Origin cache
 //!
 //! Upstream repositories are bare mirrors under
@@ -166,7 +172,7 @@ fn dispatch(ctx: &Context, color: &Color, verbose: bool, command: CliCommand) ->
             no_install,
         } => {
             let mut registry = ctx.load()?;
-            let outcome = ops::add(
+            let report = ops::add(
                 ctx,
                 AddOptions {
                     repo,
@@ -179,8 +185,11 @@ fn dispatch(ctx: &Context, color: &Color, verbose: bool, command: CliCommand) ->
                 },
                 &mut registry,
             )?;
-            print_add(&outcome, color);
-            if let Some(report) = &outcome.install {
+            print_add(&report, color);
+            if report.error.is_some() {
+                return Ok(ExitCode::from(1));
+            }
+            if let Some(report) = &report.install {
                 output::print_install_report(report, color);
                 if !report.is_ok() {
                     return Ok(ExitCode::from(1));
@@ -476,21 +485,39 @@ fn list_command(
     }
 }
 
-fn print_add(outcome: &ops::AddOutcome, color: &Color) {
-    let name = &outcome.entry.name;
-    let rev = outcome.entry.rev().unwrap_or("-");
-    let state = match outcome.state {
-        VendoredState::Current => "already current",
-        VendoredState::Changed => "updated",
-        VendoredState::Missing => "vendored",
-    };
-    println!(
-        "  {} {name} at {} ({state})",
-        color.green("added"),
-        short(rev)
-    );
-    if let skillmgr_core::registry::Origin::Vendored { repo, path, .. } = &outcome.entry.origin {
-        println!("  {repo}:{path}");
+fn print_add(report: &ops::ResolveReport, color: &Color) {
+    if let Some(error) = &report.error {
+        eprintln!(
+            "  {} {}: {error}",
+            color.yellow("kept faulty repository"),
+            report.repo
+        );
+        return;
+    }
+    if report.entries.is_empty() {
+        println!(
+            "  {} {} (no skills found)",
+            color.dim("declared"),
+            report.repo
+        );
+        return;
+    }
+    for entry in &report.entries {
+        let rev = entry.rev().unwrap_or("-");
+        println!(
+            "  {} {} at {} (vendored)",
+            color.green("added"),
+            entry.name,
+            short(rev)
+        );
+        if let skillmgr_core::registry::Origin::Vendored { repo, path, .. } = &entry.origin {
+            println!("  {repo}:{path}");
+        }
+    }
+    if !report.skipped.is_empty() {
+        for skipped in &report.skipped {
+            println!("  {} {skipped}", color.yellow("skipped"));
+        }
     }
 }
 

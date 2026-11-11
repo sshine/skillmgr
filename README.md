@@ -77,6 +77,7 @@ For a prebuilt binary instead of a source build, use
 ```console
 $ skillmgr init
 $ skillmgr add sshine/skills agentic-playwright-nix
+$ skillmgr add git@github.com:sshine/skills.git   # a whole collection
 $ skillmgr status
 NAME                     ORIGIN    LINK    REV      BEHIND  PATH
 agentic-playwright-nix   vendored  linked  84a1a07  12/3    sshine/skills:agentic-playwright-nix
@@ -110,6 +111,23 @@ source = "authored"
 and `rev` is vendored; an entry with only `source` is authored. Vendored copies are
 committed to the managed git repository; the origin cache is disposable.
 
+A repository that contains `SKILL.md` files anywhere is a skills collection. Adding
+one discovers and vendors every skill in it. A repository that cannot be reached, or
+that contains no `SKILL.md` files, is kept as a repository declaration instead of
+being rejected:
+
+```toml
+[skills.sshine-skills]
+source = "vendored"
+kind = "repository"
+repo = "git@github.com:sshine/skills.git"
+path = "."
+status = "no SKILL.md files found"
+```
+
+Repository declarations show up as `repo` or `faulty`, never block operations on
+healthy skills, and can be retried with `sync` or by adding the repository again.
+
 ## Origin cache
 
 Upstream repositories are bare mirrors under
@@ -134,9 +152,11 @@ a add   n new   u update (U all)   s sync (S all)   i install (I all)
 x uninstall   o adopt   d remove   e edit   r refresh   / filter   ? help   q quit
 ```
 
-Destructive actions ask for confirmation. Upstream checks run in the background with a
-spinner, and the detail pane reads the selected skill's `SKILL.md`, origin, pin, link
-state and behind counts.
+Destructive actions ask for confirmation. Adding a repository returns immediately:
+the fetch runs in the background with a network meter, and a failure stays in the list
+as a `faulty` entry rather than closing the dialog with an error. Upstream checks also
+run in the background, and the detail pane reads the selected skill's `SKILL.md`,
+origin, pin, link state and behind counts.
 
 ## CLI
 
@@ -207,6 +227,12 @@ source = "authored"
 `source` names the directory below `skills/`; `vendored` and `authored` are
 conventions, not hardcoded behaviour. An entry with `repo`, `path`, `branch` and
 `rev` is vendored. Anything else is authored.
+
+A repository that contains `SKILL.md` files anywhere is a skills collection:
+adding it discovers and vendors every skill. An entry with `repo` and `path` but
+no complete pin is a repository declaration. It may be unreachable or contain no
+skills; either way it stays in the registry as a faulty entry that a later
+retry can resolve, and it never blocks operations on healthy skills.
 
 ### Origin cache
 

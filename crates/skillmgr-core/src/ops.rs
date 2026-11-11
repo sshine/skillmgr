@@ -81,86 +81,362 @@ pub struct AddOptions {
     pub no_install: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct AddOutcome {
-    pub entry: Entry,
-    pub state: VendoredState,
+/// The result of resolving a repository declaration into skills.
+#[derive(Debug, Clone, Default)]
+pub struct ResolveReport {
+    pub repo: String,
+    pub entries: Vec<Entry>,
+    pub skipped: Vec<String>,
+    pub note: Option<String>,
+    pub error: Option<String>,
     pub install: Option<InstallReport>,
 }
 
-/// Declare and vendor a skill from an upstream repository.
-pub fn add(ctx: &Context, opts: AddOptions, registry: &mut Registry) -> Result<AddOutcome> {
+impl ResolveReport {
+    /// A short, user-facing summary.
+    pub fn summary(&self) -> String {
+        if let Some(error) = &self.error {
+            return format!(
+                "could not resolve {}: {error}; kept as a faulty entry",
+                self.repo
+            );
+        }
+        if let Some(note) = &self.note {
+            let mut text = format!("{}: {note}", self.repo);
+            if !self.skipped.is_empty() {
+                text.push_str(&format!(" ({})", self.skipped.join("; ")));
+            }
+            return text;
+        }
+        let names: Vec<&str> = self
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        let mut text = if names.is_empty() {
+            format!("{}: no skills found", self.repo)
+        } else {
+            format!("added {} from {}", names.join(", "), self.repo)
+        };
+        if !self.skipped.is_empty() {
+            text.push_str(&format!(" (skipped {})", self.skipped.join("; ")));
+        }
+        text
+    }
+}
+
+/// Declare a repository immediately, without touching the network.
+///
+/// Resolution into one or more skills happens separately in [`resolve_repo`]
+/// so that callers can keep the UI responsive.
+pub fn declare_repo(_ctx: &Context, opts: &AddOptions, registry: &mut Registry) -> Result<Entry> {
     let repo = Repo::parse(&opts.repo)?;
     let path = normalize_skill_path(&opts.path)?;
-    let git = ctx.git();
-
-    let fetch = !opts.no_fetch;
-    git.ensure(&repo, fetch)?;
-
-    let branch = match opts.branch {
-        Some(branch) => branch,
-        None => git.remote_head_branch_with(&repo, fetch)?,
-    };
-    crate::registry::validate_branch(&branch)?;
-
-    let rev = match opts.rev {
-        Some(rev) => git.resolve_rev_with(&repo, &rev, fetch)?,
-        None => git.resolve_branch_with(&repo, &branch, fetch)?,
+    let repo_slug = sanitize_name(repo.repo_name());
+    let requested = match &opts.name {
+        Some(name) => {
+            validate_name(name)?;
+            name.clone()
+        }
+        None => repo_slug.clone(),
     };
 
-    if !git.skill_file_exists(&repo, &rev, &path)? {
-        return Err(Error::NotASkill(format!(
-            "{}:{} has no SKILL.md",
+    if let Some(existing) = registry.get(&requested).cloned()
+        && existing.is_repo()
+        && existing.repo() == Some(repo.original())
+    {
+        let entry = Entry::repo_declaration(
+            requested.clone(),
+            existing.source,
             repo.original(),
-            if path == "." { "" } else { &path }
-        )));
+            path.clone(),
+            opts.branch.clone(),
+            opts.rev.clone(),
+            None,
+        );
+        registry.insert(entry.clone())?;
+        registry.save()?;
+        return Ok(entry);
     }
 
-    let content = git.read_file(&repo, &rev, &path)?;
-    let meta = parse_meta(&content)?;
-    let name = opts
-        .name
-        .or(meta.name)
-        .unwrap_or_else(|| default_name(&path, repo.repo_name()));
-    validate_name(&name)?;
-
-    if registry.contains(&name) {
+    if opts.name.is_some() && registry.contains(&requested) {
         return Err(Error::Conflict(format!(
-            "skill '{name}' is already declared in {}",
+            "skill '{requested}' is already declared in {}",
             registry.path().display()
         )));
     }
 
-    let dest = ctx.paths.skill_dir("vendored", &name);
-    if dest.exists() {
-        return Err(Error::Conflict(format!(
-            "{} already exists but is not registered; move or remove it first",
-            dest.display()
-        )));
-    }
-
-    let state = vendor::vendor(&git, &repo, &rev, &path, &dest)?;
-    let entry = Entry::vendored(&name, "vendored", repo.original(), &path, &branch, &rev);
+    let name = unique_name(registry, &requested);
+    let entry = Entry::repo_declaration(
+        name,
+        "vendored",
+        repo.original(),
+        path,
+        opts.branch.clone(),
+        opts.rev.clone(),
+        None,
+    );
     registry.insert(entry.clone())?;
     registry.save()?;
+    Ok(entry)
+}
 
-    let install = if opts.no_install {
+/// Resolve a declared repository into vendored skills.
+///
+/// Failures are recorded on the repository entry instead of removing it, so a
+/// faulty declaration stays visible and retryable. This function performs the
+/// fetch and may block on the network; callers should run it off the UI thread.
+pub fn resolve_repo(
+    ctx: &Context,
+    registry: &mut Registry,
+    name: &str,
+    fetch: bool,
+    no_install: bool,
+) -> ResolveReport {
+    let repo_label = registry
+        .get(name)
+        .and_then(|entry| entry.repo())
+        .unwrap_or(name)
+        .to_string();
+
+    let result = resolve_repo_inner(ctx, registry, name, fetch, no_install);
+    match result {
+        Ok(report) => report,
+        Err(e) => {
+            let message = e.to_string();
+            if registry.get(name).is_some_and(Entry::is_repo) {
+                let _ = registry.set_repo_resolution(name, None, None, None, Some(&message));
+                let _ = registry.save();
+            }
+            ResolveReport {
+                repo: repo_label,
+                error: Some(message),
+                ..ResolveReport::default()
+            }
+        }
+    }
+}
+
+fn resolve_repo_inner(
+    ctx: &Context,
+    registry: &mut Registry,
+    name: &str,
+    fetch: bool,
+    no_install: bool,
+) -> Result<ResolveReport> {
+    let entry = registry
+        .get(name)
+        .cloned()
+        .ok_or_else(|| Error::NotFound(format!("repository '{name}'")))?;
+    let Origin::Repo {
+        repo: repo_text,
+        path,
+        branch: stored_branch,
+        rev: stored_rev,
+        ..
+    } = entry.origin.clone()
+    else {
+        return Err(Error::Invalid(format!(
+            "'{name}' is not a repository declaration"
+        )));
+    };
+
+    let repo = Repo::parse(&repo_text)?;
+    let git = ctx.git();
+    git.ensure(&repo, fetch)?;
+
+    let branch = match stored_branch.filter(|branch| !branch.is_empty()) {
+        Some(branch) => branch,
+        None => git.remote_head_branch_with(&repo, false)?,
+    };
+    crate::registry::validate_branch(&branch)?;
+
+    let rev = match stored_rev.filter(|rev| !rev.is_empty()) {
+        Some(rev) => git.resolve_rev_with(&repo, &rev, false)?,
+        None => git.resolve_branch_with(&repo, &branch, false)?,
+    };
+
+    let paths = skill_paths_for(&git, &repo, &rev, &path)?;
+    if paths.is_empty() {
+        registry.set_repo_resolution(
+            name,
+            Some(&branch),
+            Some(&rev),
+            Some("no SKILL.md files found"),
+            None,
+        )?;
+        registry.save()?;
+        return Ok(ResolveReport {
+            repo: repo.original().to_string(),
+            note: Some("no SKILL.md files found".to_string()),
+            ..ResolveReport::default()
+        });
+    }
+
+    let single = paths.len() == 1;
+    let repo_slug = sanitize_name(repo.repo_name());
+    let mut entries = Vec::new();
+    let mut skipped = Vec::new();
+
+    for skill_path in &paths {
+        let content = git.read_file(&repo, &rev, skill_path)?;
+        let meta = match parse_meta(&content) {
+            Ok(meta) => meta,
+            Err(e) => {
+                skipped.push(format!("{skill_path}: {e}"));
+                continue;
+            }
+        };
+
+        let candidate = if single {
+            if entry.name != repo_slug {
+                entry.name.clone()
+            } else {
+                meta.name
+                    .clone()
+                    .unwrap_or_else(|| default_name(skill_path, repo.repo_name()))
+            }
+        } else {
+            meta.name
+                .clone()
+                .unwrap_or_else(|| default_name(skill_path, repo.repo_name()))
+        };
+        let skill_name = sanitize_name(&candidate);
+        if skill_name.is_empty() {
+            skipped.push(format!("{skill_path}: could not derive a skill name"));
+            continue;
+        }
+
+        if registry.contains(&skill_name) && skill_name != name {
+            skipped.push(format!("{skill_name}: already declared"));
+            continue;
+        }
+
+        let dest = ctx.paths.skill_dir("vendored", &skill_name);
+        if dest.exists() && !registry.contains(&skill_name) {
+            skipped.push(format!(
+                "{skill_name}: {} already exists but is not registered",
+                dest.display()
+            ));
+            continue;
+        }
+
+        vendor::vendor(&git, &repo, &rev, skill_path, &dest)?;
+        let resolved = Entry::vendored(
+            &skill_name,
+            "vendored",
+            repo.original(),
+            skill_path,
+            &branch,
+            &rev,
+        );
+        registry.insert(resolved.clone())?;
+        entries.push(resolved);
+    }
+
+    if entries.is_empty() {
+        let status = if skipped.is_empty() {
+            "no skills added".to_string()
+        } else {
+            format!("no skills added: {}", skipped.join("; "))
+        };
+        registry.set_repo_resolution(name, Some(&branch), Some(&rev), Some(&status), None)?;
+        registry.save()?;
+        return Ok(ResolveReport {
+            repo: repo.original().to_string(),
+            skipped,
+            note: Some("no skills added".to_string()),
+            ..ResolveReport::default()
+        });
+    }
+
+    if registry.get(name).is_some_and(Entry::is_repo) {
+        registry.remove(name);
+    }
+    registry.save()?;
+
+    let install = if no_install {
         None
     } else {
+        let names: Vec<String> = entries.iter().map(|entry| entry.name.clone()).collect();
         Some(install::install(
-            &ctx.paths,
-            registry,
-            std::slice::from_ref(&name),
-            false,
-            false,
+            &ctx.paths, registry, &names, false, false,
         )?)
     };
 
-    Ok(AddOutcome {
-        entry,
-        state,
+    Ok(ResolveReport {
+        repo: repo.original().to_string(),
+        entries,
+        skipped,
+        note: None,
+        error: None,
         install,
     })
+}
+
+fn skill_paths_for(git: &Git, repo: &Repo, rev: &str, path: &str) -> Result<Vec<String>> {
+    if path == "." {
+        return git.skill_paths(repo, rev);
+    }
+    if git.skill_file_exists(repo, rev, path)? {
+        return Ok(vec![path.to_string()]);
+    }
+
+    let all = git.skill_paths(repo, rev)?;
+    let prefix = format!("{path}/");
+    let within: Vec<String> = all
+        .into_iter()
+        .filter(|candidate| candidate == path || candidate.starts_with(&prefix))
+        .collect();
+    if within.is_empty() {
+        return Err(Error::NotASkill(format!(
+            "{path} contains no SKILL.md in {}",
+            repo.original()
+        )));
+    }
+    Ok(within)
+}
+
+/// Declare and vendor one skill or an entire repository of skills.
+pub fn add(ctx: &Context, opts: AddOptions, registry: &mut Registry) -> Result<ResolveReport> {
+    let declared = declare_repo(ctx, &opts, registry)?;
+    Ok(resolve_repo(
+        ctx,
+        registry,
+        &declared.name,
+        !opts.no_fetch,
+        opts.no_install,
+    ))
+}
+
+fn unique_name(registry: &Registry, requested: &str) -> String {
+    if !registry.contains(requested) {
+        return requested.to_string();
+    }
+    for suffix in 2.. {
+        let candidate = format!("{requested}-{suffix}");
+        if !registry.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("an unbounded suffix search always finds a free name")
+}
+
+/// Fold a repository or directory name into the skill naming convention.
+fn sanitize_name(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut last_dash = false;
+    for ch in input.chars() {
+        let ch = ch.to_ascii_lowercase();
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash && !out.is_empty() {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -674,6 +950,10 @@ fn vendored_parts(entry: &Entry) -> Result<(String, String, String, String)> {
             branch,
             rev,
         } => Ok((repo.clone(), path.clone(), branch.clone(), rev.clone())),
+        Origin::Repo { .. } => Err(Error::Invalid(format!(
+            "'{}' is an unresolved repository, not a skill",
+            entry.name
+        ))),
         Origin::Authored => Err(Error::Invalid(format!(
             "skill '{}' is authored and has no upstream",
             entry.name

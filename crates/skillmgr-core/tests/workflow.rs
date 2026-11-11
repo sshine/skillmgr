@@ -242,6 +242,127 @@ fn install_refuses_a_real_directory_and_adopt_moves_it() {
 }
 
 #[test]
+fn a_collection_repository_adds_every_skill() {
+    let fixture = Fixture::new();
+    fixture.commit(
+        "second skill",
+        "skills/goodbye/SKILL.md",
+        "---\nname: goodbye\ndescription: Another demo skill.\n---\n# Goodbye\n",
+    );
+    let ctx = fixture.context();
+    let mut registry = ctx.load().expect("registry");
+
+    let report = ops::add(
+        &ctx,
+        AddOptions {
+            repo: fixture.url(),
+            path: ".".to_string(),
+            name: None,
+            branch: None,
+            rev: None,
+            no_fetch: false,
+            no_install: false,
+        },
+        &mut registry,
+    )
+    .expect("add");
+
+    assert!(report.error.is_none());
+    let names: Vec<&str> = report.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, vec!["goodbye", "hello"]);
+
+    let registry = ctx.load().expect("registry");
+    assert!(registry.get("hello").expect("hello").is_vendored());
+    assert!(registry.get("goodbye").expect("goodbye").is_vendored());
+    assert!(ctx.paths.dest().join("hello").is_symlink());
+    assert!(ctx.paths.dest().join("goodbye").is_symlink());
+}
+
+#[test]
+fn a_repository_without_skills_is_kept_as_an_empty_repository() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let repo = dir.path().join("empty");
+    std::fs::create_dir_all(&repo).expect("mkdir");
+    std::fs::write(repo.join("README.md"), "nothing to see\n").expect("readme");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "initial"]);
+
+    let paths = Paths::resolve(
+        Some(dir.path().join("root")),
+        Some(dir.path().join("dest")),
+        Some(dir.path().join("cache")),
+    )
+    .expect("paths");
+    let ctx = Context::new(paths, false);
+    ops::init(&ctx, true).expect("init");
+
+    let mut registry = ctx.load().expect("registry");
+    let report = ops::add(
+        &ctx,
+        AddOptions {
+            repo: format!("file://{}", repo.display()),
+            path: ".".to_string(),
+            name: None,
+            branch: None,
+            rev: None,
+            no_fetch: false,
+            no_install: false,
+        },
+        &mut registry,
+    )
+    .expect("add");
+
+    assert!(report.error.is_none());
+    assert!(report.entries.is_empty());
+    assert!(report.note.is_some());
+
+    let registry = ctx.load().expect("registry");
+    let entry = registry.get("empty").expect("repository entry");
+    assert!(entry.is_repo());
+    assert_eq!(entry.repo_status(), Some("no SKILL.md files found"));
+}
+
+#[test]
+fn an_unreachable_repository_stays_as_a_faulty_entry() {
+    let fixture = Fixture::new();
+    let ctx = fixture.context();
+    let mut registry = ctx.load().expect("registry");
+
+    let missing = format!("file://{}", fixture.dir.path().join("missing").display());
+    let entry = ops::declare_repo(
+        &ctx,
+        &AddOptions {
+            repo: missing,
+            path: ".".to_string(),
+            name: None,
+            branch: None,
+            rev: None,
+            no_fetch: false,
+            no_install: false,
+        },
+        &mut registry,
+    )
+    .expect("declare");
+
+    let report = ops::resolve_repo(&ctx, &mut registry, &entry.name, true, false);
+    assert!(report.error.is_some());
+
+    let registry = ctx.load().expect("registry");
+    let entry = registry.get("missing").expect("faulty entry");
+    assert!(entry.is_repo());
+    assert!(entry.repo_error().is_some());
+
+    // Local processing of a faulty entry is a no-op, not an error.
+    let report = ops::install_skills(&ctx, &registry, &[], false, true).expect("install");
+    assert!(report.conflicts.is_empty());
+    let statuses = ops::list(&ctx, &registry, &[], false, false).expect("list");
+    assert!(statuses.iter().any(|s| s.is_repo()));
+}
+
+#[test]
 fn new_register_and_remove() {
     let fixture = Fixture::new();
     let ctx = fixture.context();

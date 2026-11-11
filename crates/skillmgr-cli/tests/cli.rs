@@ -231,6 +231,27 @@ fn install_reports_a_real_directory_conflict() {
 }
 
 #[test]
+fn a_faulty_repository_is_kept_and_reported() {
+    let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+
+    let missing = format!("file://{}", fixture.dir.path().join("missing").display());
+    fixture
+        .command()
+        .args(["add", &missing])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("kept faulty repository"));
+
+    fixture
+        .command()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("faulty"));
+}
+
+#[test]
 fn no_arguments_in_a_pipe_prints_help() {
     let fixture = Fixture::new();
     fixture

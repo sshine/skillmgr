@@ -12,11 +12,27 @@ use crate::skill::validate_name;
 /// Where a skill's content comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
+    /// A resolved upstream skill pinned to one revision.
     Vendored {
         repo: String,
         path: String,
         branch: String,
         rev: String,
+    },
+    /// A declared upstream repository that has not resolved into skills yet.
+    ///
+    /// A repository is a skills collection when it contains `SKILL.md` files
+    /// anywhere. It may legitimately contain none, and it may be unreachable;
+    /// either way the declaration is kept so that a later retry can resolve it.
+    Repo {
+        repo: String,
+        path: String,
+        branch: Option<String>,
+        rev: Option<String>,
+        /// Resolution information, such as "no SKILL.md files found".
+        status: Option<String>,
+        /// Why resolution failed, if it did.
+        error: Option<String>,
     },
     Authored,
 }
@@ -24,6 +40,10 @@ pub enum Origin {
 impl Origin {
     pub fn is_vendored(&self) -> bool {
         matches!(self, Self::Vendored { .. })
+    }
+
+    pub fn is_repo(&self) -> bool {
+        matches!(self, Self::Repo { .. })
     }
 }
 
@@ -64,10 +84,79 @@ impl Entry {
         }
     }
 
+    /// Declare a repository before (or without) resolving it into skills.
+    pub fn repo_declaration(
+        name: impl Into<String>,
+        source: impl Into<String>,
+        repo: impl Into<String>,
+        path: impl Into<String>,
+        branch: Option<String>,
+        rev: Option<String>,
+        status: Option<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            source: source.into(),
+            origin: Origin::Repo {
+                repo: repo.into(),
+                path: path.into(),
+                branch,
+                rev,
+                status,
+                error: None,
+            },
+        }
+    }
+
     pub fn rev(&self) -> Option<&str> {
         match &self.origin {
             Origin::Vendored { rev, .. } => Some(rev),
+            Origin::Repo { .. } | Origin::Authored => None,
+        }
+    }
+
+    /// Whether this entry is a resolved skill rather than a repository declaration.
+    pub fn is_skill(&self) -> bool {
+        !self.origin.is_repo()
+    }
+
+    pub fn is_repo(&self) -> bool {
+        self.origin.is_repo()
+    }
+
+    pub fn is_vendored(&self) -> bool {
+        self.origin.is_vendored()
+    }
+
+    /// The upstream repository for both resolved and unresolved entries.
+    pub fn repo(&self) -> Option<&str> {
+        match &self.origin {
+            Origin::Vendored { repo, .. } | Origin::Repo { repo, .. } => Some(repo),
             Origin::Authored => None,
+        }
+    }
+
+    /// The path inside the repository for both resolved and unresolved entries.
+    pub fn repo_path(&self) -> Option<&str> {
+        match &self.origin {
+            Origin::Vendored { path, .. } | Origin::Repo { path, .. } => Some(path),
+            Origin::Authored => None,
+        }
+    }
+
+    /// A repository's non-error resolution status, such as "no skills found".
+    pub fn repo_status(&self) -> Option<&str> {
+        match &self.origin {
+            Origin::Repo { status, .. } => status.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Why a repository declaration failed to resolve.
+    pub fn repo_error(&self) -> Option<&str> {
+        match &self.origin {
+            Origin::Repo { error, .. } => error.as_deref(),
+            _ => None,
         }
     }
 }
@@ -207,6 +296,11 @@ impl Registry {
             .ok_or_else(|| Error::NotFound(format!("skill '{name}'")))?;
         match &mut entry.origin {
             Origin::Vendored { rev: pinned, .. } => *pinned = rev.to_string(),
+            Origin::Repo { .. } => {
+                return Err(Error::Invalid(format!(
+                    "repository '{name}' has not resolved into a skill"
+                )));
+            }
             Origin::Authored => {
                 return Err(Error::Invalid(format!(
                     "skill '{name}' is authored and has no revision"
@@ -227,6 +321,11 @@ impl Registry {
             Origin::Vendored {
                 branch: recorded, ..
             } => *recorded = branch.to_string(),
+            Origin::Repo { .. } => {
+                return Err(Error::Invalid(format!(
+                    "repository '{name}' has not resolved into a skill"
+                )));
+            }
             Origin::Authored => {
                 return Err(Error::Invalid(format!(
                     "skill '{name}' is authored and has no branch"
@@ -234,6 +333,88 @@ impl Registry {
             }
         }
         self.set_field(name, "branch", branch)
+    }
+
+    /// Record what a repository declaration resolved to, or why it failed.
+    pub fn set_repo_resolution(
+        &mut self,
+        name: &str,
+        branch: Option<&str>,
+        rev: Option<&str>,
+        status: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        let entry = self
+            .entries
+            .get_mut(name)
+            .ok_or_else(|| Error::NotFound(format!("repository '{name}'")))?;
+        match &mut entry.origin {
+            Origin::Repo {
+                branch: recorded_branch,
+                rev: recorded_rev,
+                status: recorded_status,
+                error: recorded_error,
+                ..
+            } => {
+                if let Some(branch) = branch {
+                    validate_branch(branch)?;
+                    *recorded_branch = Some(branch.to_string());
+                }
+                if let Some(rev) = rev {
+                    *recorded_rev = Some(rev.to_string());
+                }
+                *recorded_status = status.map(str::to_string);
+                *recorded_error = error.map(str::to_string);
+            }
+            Origin::Vendored { .. } | Origin::Authored => {
+                return Err(Error::Invalid(format!(
+                    "'{name}' is not a repository declaration"
+                )));
+            }
+        }
+
+        let skills = self
+            .doc
+            .get_mut("skills")
+            .and_then(Item::as_table_mut)
+            .ok_or_else(|| Error::Toml("`skills` must be a table".to_string()))?;
+        let table = skills
+            .get_mut(name)
+            .and_then(Item::as_table_mut)
+            .ok_or_else(|| Error::Toml(format!("missing table for repository '{name}'")))?;
+        match branch {
+            Some(branch) => {
+                table.insert("branch", value(branch.to_string()));
+            }
+            None => {
+                table.remove("branch");
+            }
+        }
+        match rev {
+            Some(rev) => {
+                table.insert("rev", value(rev.to_string()));
+            }
+            None => {
+                table.remove("rev");
+            }
+        }
+        match status {
+            Some(status) => {
+                table.insert("status", value(status.to_string()));
+            }
+            None => {
+                table.remove("status");
+            }
+        }
+        match error {
+            Some(error) => {
+                table.insert("error", value(error.to_string()));
+            }
+            None => {
+                table.remove("error");
+            }
+        }
+        Ok(())
     }
 
     fn set_field(&mut self, name: &str, field: &str, text: &str) -> Result<()> {
@@ -282,17 +463,43 @@ fn ensure_skills_table(doc: &mut DocumentMut) -> Result<()> {
 fn entry_table(entry: &Entry) -> Table {
     let mut table = Table::new();
     table.insert("source", value(entry.source.clone()));
-    if let Origin::Vendored {
-        repo,
-        path,
-        branch,
-        rev,
-    } = &entry.origin
-    {
-        table.insert("repo", value(repo.clone()));
-        table.insert("path", value(path.clone()));
-        table.insert("branch", value(branch.clone()));
-        table.insert("rev", value(rev.clone()));
+    match &entry.origin {
+        Origin::Vendored {
+            repo,
+            path,
+            branch,
+            rev,
+        } => {
+            table.insert("repo", value(repo.clone()));
+            table.insert("path", value(path.clone()));
+            table.insert("branch", value(branch.clone()));
+            table.insert("rev", value(rev.clone()));
+        }
+        Origin::Repo {
+            repo,
+            path,
+            branch,
+            rev,
+            status,
+            error,
+        } => {
+            table.insert("kind", value("repository"));
+            table.insert("repo", value(repo.clone()));
+            table.insert("path", value(path.clone()));
+            if let Some(branch) = branch {
+                table.insert("branch", value(branch.clone()));
+            }
+            if let Some(rev) = rev {
+                table.insert("rev", value(rev.clone()));
+            }
+            if let Some(status) = status {
+                table.insert("status", value(status.clone()));
+            }
+            if let Some(error) = error {
+                table.insert("error", value(error.clone()));
+            }
+        }
+        Origin::Authored => {}
     }
     table
 }
@@ -310,25 +517,53 @@ fn parse_entry(name: &str, item: &Item) -> Result<Entry> {
     let path = optional_string(table, "path");
     let branch = optional_string(table, "branch");
     let rev = optional_string(table, "rev");
+    let status = optional_string(table, "status");
+    let error = optional_string(table, "error");
+    let kind = optional_string(table, "kind");
+    if let Some(kind) = &kind
+        && kind != "repository"
+    {
+        return Err(Error::Toml(format!(
+            "skill '{name}' has unknown kind '{kind}'"
+        )));
+    }
+    let declared_repository = kind.as_deref() == Some("repository");
 
-    let any_vendor_field = repo.is_some() || path.is_some() || branch.is_some() || rev.is_some();
+    let any_vendor_field = declared_repository
+        || repo.is_some()
+        || path.is_some()
+        || branch.is_some()
+        || rev.is_some();
     if any_vendor_field || source == "vendored" {
         let repo = repo.ok_or_else(|| missing(name, "repo"))?;
-        let path = path.ok_or_else(|| missing(name, "path"))?;
-        let branch = branch.ok_or_else(|| missing(name, "branch"))?;
-        let rev = rev.ok_or_else(|| missing(name, "rev"))?;
-        validate_branch(&branch)?;
-        if rev.trim().is_empty() {
-            return Err(missing(name, "rev"));
+        let path = normalize_skill_path(path.as_deref().unwrap_or("."))?;
+
+        // A fully pinned entry is a skill. Anything else is a repository
+        // declaration whose resolution failed, has not run yet, or found no
+        // SKILL.md files.
+        if !declared_repository
+            && status.is_none()
+            && error.is_none()
+            && let (Some(branch), Some(rev)) = (&branch, &rev)
+        {
+            validate_branch(branch)?;
+            if rev.trim().is_empty() {
+                return Err(missing(name, "rev"));
+            }
+            return Ok(Entry::vendored(name, source, repo, path, branch, rev));
         }
-        return Ok(Entry::vendored(
-            name,
-            source,
-            repo,
-            normalize_skill_path(&path)?,
-            branch,
-            rev,
-        ));
+
+        if let Some(branch) = &branch {
+            validate_branch(branch)?;
+        }
+        let mut entry = Entry::repo_declaration(name, source, repo, path, branch, rev, status);
+        if let Origin::Repo {
+            error: recorded, ..
+        } = &mut entry.origin
+        {
+            *recorded = error;
+        }
+        return Ok(entry);
     }
 
     Ok(Entry::authored(name, source))
@@ -410,14 +645,31 @@ mod tests {
     }
 
     #[test]
-    fn vendored_entries_require_all_git_fields() {
+    fn a_repository_declaration_with_a_revision_is_not_mistaken_for_a_skill() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("skills.toml");
         std::fs::write(
             &path,
-            "[skills.foo]\nsource = \"vendored\"\nrepo = \"sshine/skills\"\n",
+            "[skills.foo]\nsource = \"vendored\"\nkind = \"repository\"\nrepo = \"sshine/skills\"\npath = \".\"\nbranch = \"main\"\nrev = \"abc123\"\n",
         )
         .expect("write");
-        assert!(Registry::load(&path).is_err());
+        let registry = Registry::load(&path).expect("load");
+        assert!(registry.get("foo").expect("entry").is_repo());
+    }
+
+    #[test]
+    fn an_unpinned_repository_declaration_round_trips_as_faulty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("skills.toml");
+        std::fs::write(
+            &path,
+            "[skills.foo]\nsource = \"vendored\"\nrepo = \"sshine/skills\"\nerror = \"no such host\"\n",
+        )
+        .expect("write");
+        let registry = Registry::load(&path).expect("load");
+        let entry = registry.get("foo").expect("entry");
+        assert!(entry.is_repo());
+        assert_eq!(entry.repo(), Some("sshine/skills"));
+        assert_eq!(entry.repo_error(), Some("no such host"));
     }
 }

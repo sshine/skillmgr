@@ -50,7 +50,13 @@ pub fn install(
     prune: bool,
 ) -> Result<InstallReport> {
     std::fs::create_dir_all(paths.dest())?;
-    let selected = registry.select(names)?;
+    // Repository declarations that have not resolved into skills have no
+    // directory to link. Skip them instead of reporting a conflict.
+    let selected: Vec<_> = registry
+        .select(names)?
+        .into_iter()
+        .filter(|entry| entry.is_skill())
+        .collect();
     let desired: BTreeSet<String> = selected.iter().map(|e| e.name.clone()).collect();
 
     let mut report = InstallReport::default();

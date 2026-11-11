@@ -51,6 +51,38 @@ fn dashboard_renders_authored_skill_and_shortcuts() {
     assert!(text.contains("filter"));
 }
 
+#[test]
+fn a_faulty_repository_is_visible_and_marked() {
+    let (dir, ctx) = context("faulty");
+    ops::init(&ctx, true).expect("init");
+    let mut registry = ctx.load().expect("registry");
+    let missing = format!("file://{}", dir.path().join("missing").display());
+    let entry = ops::declare_repo(
+        &ctx,
+        &ops::AddOptions {
+            repo: missing,
+            path: ".".to_string(),
+            name: None,
+            branch: None,
+            rev: None,
+            no_fetch: true,
+            no_install: true,
+        },
+        &mut registry,
+    )
+    .expect("declare");
+    ops::resolve_repo(&ctx, &mut registry, &entry.name, false, true);
+
+    let mut app = App::new(ctx);
+    let mut terminal = Terminal::new(TestBackend::new(120, 36)).expect("terminal");
+    terminal
+        .draw(|frame| ui::draw(frame, &mut app))
+        .expect("draw");
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(text.contains("faulty"));
+    assert!(text.contains("missing"));
+}
+
 fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
     let area = buffer.area();
     let mut text = String::new();

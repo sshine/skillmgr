@@ -93,12 +93,24 @@ pub fn statuses_json(statuses: &[SkillStatus]) -> String {
                     Some(branch.clone()),
                     Some(rev.clone()),
                 ),
+                Origin::Repo {
+                    repo,
+                    path,
+                    branch,
+                    rev,
+                    ..
+                } => (
+                    Some(repo.clone()),
+                    Some(path.clone()),
+                    branch.clone(),
+                    rev.clone(),
+                ),
                 Origin::Authored => (None, None, None, None),
             };
             serde_json::json!({
                 "name": s.name,
                 "source": s.source,
-                "origin": if s.is_vendored() { "vendored" } else if s.registered { "authored" } else { "unregistered" },
+                "origin": origin_label(s),
                 "registered": s.registered,
                 "link": link_label(&s.link),
                 "managed_path": s.managed_path.display().to_string(),
@@ -135,6 +147,14 @@ fn upstream_label(upstream: Option<&Upstream>) -> &'static str {
 fn origin_label(status: &SkillStatus) -> &'static str {
     if !status.registered {
         "unregistered"
+    } else if status.is_repo() {
+        if status.repo_error().is_some() {
+            "faulty"
+        } else if status.repo_status().is_some() {
+            "empty"
+        } else {
+            "repo"
+        }
     } else if status.is_vendored() {
         "vendored"
     } else {
@@ -144,7 +164,7 @@ fn origin_label(status: &SkillStatus) -> &'static str {
 
 fn path_label(status: &SkillStatus) -> String {
     match &status.origin {
-        Origin::Vendored { repo, path, .. } => {
+        Origin::Vendored { repo, path, .. } | Origin::Repo { repo, path, .. } => {
             if path == "." {
                 repo.clone()
             } else {
@@ -158,7 +178,7 @@ fn path_label(status: &SkillStatus) -> String {
 fn short_rev(status: &SkillStatus) -> String {
     match &status.origin {
         Origin::Vendored { rev, .. } => rev.chars().take(7).collect(),
-        Origin::Authored => "-".to_string(),
+        Origin::Repo { .. } | Origin::Authored => "-".to_string(),
     }
 }
 
@@ -176,6 +196,9 @@ fn paint_origin(text: &str, color: &Color) -> String {
     match text {
         "vendored" => color.blue(text),
         "authored" => color.green(text),
+        "repo" => color.yellow(text),
+        "empty" => color.dim(text),
+        "faulty" => color.red(text),
         "unregistered" => color.yellow(text),
         _ => text.to_string(),
     }

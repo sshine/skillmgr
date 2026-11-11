@@ -252,6 +252,36 @@ impl Git {
         Ok(run(Some(&origin), &["cat-file", "-e", &treeish]).is_ok())
     }
 
+    /// Every directory containing a `SKILL.md` at a revision.
+    ///
+    /// The root directory is reported as `"."`. An empty result means the
+    /// repository is a perfectly valid skills collection with no skills in it.
+    pub fn skill_paths(&self, repo: &Repo, rev: &str) -> Result<Vec<String>> {
+        let origin = self.ensure(repo, false)?;
+        let output = match run(Some(&origin), &["ls-tree", "-r", "--name-only", rev]) {
+            Ok(output) => output,
+            Err(_) if !self.offline => {
+                // A partial clone may lack trees for this revision. Refetch
+                // without the filter and retry once.
+                self.fetch_complete(repo)?;
+                run(Some(&origin), &["ls-tree", "-r", "--name-only", rev])?
+            }
+            Err(e) => return Err(e),
+        };
+
+        let mut paths = Vec::new();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line == "SKILL.md" {
+                paths.push(".".to_string());
+            } else if let Some(parent) = line.strip_suffix("/SKILL.md") {
+                paths.push(parent.to_string());
+            }
+        }
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
     /// Whether `<rev>:<path>/SKILL.md` exists.
     pub fn skill_file_exists(&self, repo: &Repo, rev: &str, path: &str) -> Result<bool> {
         let origin = self.ensure(repo, false)?;

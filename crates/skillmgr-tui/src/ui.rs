@@ -87,13 +87,37 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(app.theme.warning),
         ));
     }
-    if app.busy {
+    if let Some(network) = &app.network {
+        let meter = network_meter(network.frame, 12);
         spans.push(Span::styled(
-            format!("  {} checking", app.spinner.frame()),
+            format!(
+                "  {} {} [{}] {}s",
+                app.spinner.frame(),
+                network.label,
+                meter,
+                network.elapsed_secs()
+            ),
+            Style::default().fg(app.theme.info),
+        ));
+    } else if app.busy {
+        spans.push(Span::styled(
+            format!("  {} working", app.spinner.frame()),
             Style::default().fg(app.theme.info),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// A moving block in a trough, indicating indeterminate network progress.
+fn network_meter(frame: u64, width: usize) -> String {
+    let cycle = width + 6;
+    let head = (frame as usize) % cycle;
+    let mut meter = String::with_capacity(width);
+    for position in 0..width {
+        let block = position < head.min(width) && position + 4 >= head;
+        meter.push(if block { '█' } else { '░' });
+    }
+    meter
 }
 
 fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
@@ -160,23 +184,35 @@ fn draw_table(frame: &mut Frame, app: &App, area: Rect) {
 fn row_for(status: &SkillStatus, theme: Theme) -> Row<'static> {
     let origin = if !status.registered {
         ("unregistered", theme.warning)
+    } else if status.is_repo() {
+        if status.repo_error().is_some() {
+            ("faulty", theme.error)
+        } else if status.repo_status().is_some() {
+            ("empty", theme.warning)
+        } else {
+            ("repo", theme.warning)
+        }
     } else if status.is_vendored() {
         ("vendored", theme.secondary)
     } else {
         ("authored", theme.success)
     };
 
-    let (link, link_color) = match &status.link {
-        LinkState::Linked => ("linked", theme.success),
-        LinkState::Unlinked => ("unlinked", theme.warning),
-        LinkState::Broken => ("broken", theme.error),
-        LinkState::ForeignDir => ("foreign-dir", theme.error),
-        LinkState::ForeignSymlink => ("foreign-link", theme.error),
+    let (link, link_color) = if status.is_repo() {
+        ("-", theme.text_muted)
+    } else {
+        match &status.link {
+            LinkState::Linked => ("linked", theme.success),
+            LinkState::Unlinked => ("unlinked", theme.warning),
+            LinkState::Broken => ("broken", theme.error),
+            LinkState::ForeignDir => ("foreign-dir", theme.error),
+            LinkState::ForeignSymlink => ("foreign-link", theme.error),
+        }
     };
 
     let rev = match &status.origin {
         Origin::Vendored { rev, .. } => rev.chars().take(7).collect::<String>(),
-        Origin::Authored => "-".to_string(),
+        Origin::Repo { .. } | Origin::Authored => "-".to_string(),
     };
 
     let behind = status.behind_label();
@@ -189,7 +225,7 @@ fn row_for(status: &SkillStatus, theme: Theme) -> Row<'static> {
     };
 
     let path = match &status.origin {
-        Origin::Vendored { repo, path, .. } => {
+        Origin::Vendored { repo, path, .. } | Origin::Repo { repo, path, .. } => {
             if path == "." {
                 repo.clone()
             } else {
@@ -251,6 +287,10 @@ fn detail_text(status: &SkillStatus, theme: Theme) -> Text<'static> {
             "upstream".to_string(),
             upstream_label(status.upstream.as_ref()),
         ));
+    } else if let Some((repo, path)) = status.repo_target() {
+        facts.push(("repo".to_string(), repo.to_string()));
+        facts.push(("path".to_string(), path.to_string()));
+        facts.push(("state".to_string(), "repository declaration".to_string()));
     }
     if let Some(version) = &status.version {
         facts.push(("version".to_string(), version.clone()));
@@ -354,6 +394,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             "  Vendored = copied from upstream. Authored = written in the managed directory.",
         ),
         Line::from("  BEHIND is repo/path: commits on the branch, and those touching the skill."),
+        Line::from("  A faulty repo failed to resolve; press s or u on it to retry."),
         Line::from(""),
         Line::from("  Press any key to close."),
     ];
@@ -469,6 +510,14 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 fn origin_label(status: &SkillStatus) -> &'static str {
     if !status.registered {
         "unregistered"
+    } else if status.is_repo() {
+        if status.repo_error().is_some() {
+            "faulty"
+        } else if status.repo_status().is_some() {
+            "empty"
+        } else {
+            "repo"
+        }
     } else if status.is_vendored() {
         "vendored"
     } else {

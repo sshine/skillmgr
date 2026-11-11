@@ -30,6 +30,10 @@ impl SkillStatus {
         self.origin.is_vendored()
     }
 
+    pub fn is_repo(&self) -> bool {
+        self.origin.is_repo()
+    }
+
     pub fn is_outdated(&self) -> bool {
         match &self.upstream {
             Some(Upstream::Behind { repo, path }) => *repo > 0 || *path > 0,
@@ -58,7 +62,33 @@ impl SkillStatus {
                 branch,
                 rev,
             } => Some((repo, path, branch, rev)),
+            Origin::Repo { .. } | Origin::Authored => None,
+        }
+    }
+
+    /// The repository and path for both resolved and unresolved entries.
+    pub fn repo_target(&self) -> Option<(&str, &str)> {
+        match &self.origin {
+            Origin::Vendored { repo, path, .. } | Origin::Repo { repo, path, .. } => {
+                Some((repo, path))
+            }
             Origin::Authored => None,
+        }
+    }
+
+    /// The non-error resolution status of an unresolved repository.
+    pub fn repo_status(&self) -> Option<&str> {
+        match &self.origin {
+            Origin::Repo { status, .. } => status.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Why an unresolved repository failed.
+    pub fn repo_error(&self) -> Option<&str> {
+        match &self.origin {
+            Origin::Repo { error, .. } => error.as_deref(),
+            _ => None,
         }
     }
 }
@@ -105,7 +135,15 @@ fn entry_status(paths: &Paths, entry: &Entry) -> Result<SkillStatus> {
     let managed_path = paths.skill_dir(&entry.source, &entry.name);
     let link = inspect(paths, &paths.dest().join(&entry.name), &managed_path)?;
     let meta = read_skill_meta(&managed_path).ok();
-    let note = if !managed_path.is_dir() {
+    let note = if entry.is_repo() {
+        Some(
+            entry
+                .repo_error()
+                .or_else(|| entry.repo_status())
+                .unwrap_or("repository has not been resolved")
+                .to_string(),
+        )
+    } else if !managed_path.is_dir() {
         Some("missing managed directory".to_string())
     } else {
         None

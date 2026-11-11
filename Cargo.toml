@@ -38,7 +38,7 @@ url = "2"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4.5"
 
-promptui-core = { git = "https://github.com/sshine/promptui", rev = "48e0533e8fa487b4a27a6a18dd9f672685416926" }
+promptui-core = { git = "https://github.com/sshine/promptui", rev = "90781cdd104e66a543af43ce1af897e9038886b3" }
 ratatui = "0.29"
 crossterm = "0.28"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

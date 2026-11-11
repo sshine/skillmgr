@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::Instant;
 
 use promptui_core::input::Input;
 use promptui_core::theme::Theme;
@@ -83,8 +84,34 @@ pub struct Confirm {
 }
 
 enum WorkerEvent {
-    Status(Vec<SkillStatus>),
-    Error(String),
+    Refreshed(Result<Vec<SkillStatus>, String>),
+    Action {
+        level: NoticeLevel,
+        message: String,
+        refresh: bool,
+    },
+}
+
+/// An in-flight network operation, shown as a label and an indeterminate meter.
+#[derive(Debug, Clone)]
+pub struct NetworkActivity {
+    pub label: String,
+    pub started: Instant,
+    pub frame: u64,
+}
+
+impl NetworkActivity {
+    fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            started: Instant::now(),
+            frame: 0,
+        }
+    }
+
+    pub fn elapsed_secs(&self) -> u64 {
+        self.started.elapsed().as_secs()
+    }
 }
 
 pub struct App {
@@ -97,6 +124,7 @@ pub struct App {
     pub notice: Notice,
     pub spinner: Spinner,
     pub busy: bool,
+    pub network: Option<NetworkActivity>,
     pub filter: TextField,
     pub filter_text: String,
     pub form: Option<Form>,
@@ -125,6 +153,7 @@ impl App {
             notice: Notice::new(theme),
             spinner: Spinner::new(SpinnerStyle::BREATHING_DOT),
             busy: false,
+            network: None,
             filter,
             filter_text: String::new(),
             form: None,
@@ -172,7 +201,16 @@ impl App {
         }
     }
 
+    /// Check upstream state in the background.
     pub fn refresh(&mut self) {
+        self.start_refresh(false);
+    }
+
+    fn refresh_quietly(&mut self) {
+        self.start_refresh(true);
+    }
+
+    fn start_refresh(&mut self, quiet: bool) {
         if self.busy || self.registry.is_none() {
             return;
         }
@@ -180,23 +218,101 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.busy = true;
         self.spinner.start();
-        self.notice.show(NoticeLevel::Info, "checking upstream…");
+        self.network = Some(NetworkActivity::new("checking upstream"));
+        if !quiet {
+            self.notice.show(NoticeLevel::Info, "checking upstream…");
+        }
         std::thread::spawn(move || {
             let result = Registry::load(&ctx.paths.registry())
-                .and_then(|registry| ops::list(&ctx, &registry, &[], true, false));
-            let event = match result {
-                Ok(statuses) => WorkerEvent::Status(statuses),
-                Err(e) => WorkerEvent::Error(e.to_string()),
-            };
-            let _ = tx.send(event);
+                .and_then(|registry| ops::list(&ctx, &registry, &[], true, false))
+                .map_err(|e| e.to_string());
+            let _ = tx.send(WorkerEvent::Refreshed(result));
         });
         self.worker = Some(rx);
+    }
+
+    /// Run a possibly-slow task off the UI thread. `network` controls whether
+    /// the fetch meter is shown.
+    fn spawn_action<F>(&mut self, label: impl Into<String>, network: bool, task: F)
+    where
+        F: FnOnce(&Context) -> (NoticeLevel, String, bool) + Send + 'static,
+    {
+        self.spawn_action_with(false, label, network, task);
+    }
+
+    /// Like [`Self::spawn_action`], but may supersede a background refresh.
+    ///
+    /// Adding a repository should never be refused just because an upstream
+    /// check is still running; the check only reads, so dropping it is safe.
+    fn spawn_action_urgent<F>(&mut self, label: impl Into<String>, network: bool, task: F)
+    where
+        F: FnOnce(&Context) -> (NoticeLevel, String, bool) + Send + 'static,
+    {
+        self.spawn_action_with(true, label, network, task);
+    }
+
+    fn spawn_action_with<F>(
+        &mut self,
+        urgent: bool,
+        label: impl Into<String>,
+        network: bool,
+        task: F,
+    ) where
+        F: FnOnce(&Context) -> (NoticeLevel, String, bool) + Send + 'static,
+    {
+        let refreshing = self
+            .network
+            .as_ref()
+            .is_some_and(|network| network.label == "checking upstream");
+        if self.busy && (!urgent || !refreshing) {
+            self.notice
+                .show(NoticeLevel::Warn, "still working; try again in a moment");
+            return;
+        }
+        let ctx = self.ctx.clone();
+        let (tx, rx) = mpsc::channel();
+        self.busy = true;
+        self.spinner.start();
+        self.network = network.then(|| NetworkActivity::new(label));
+        std::thread::spawn(move || {
+            let (level, message, refresh) = task(&ctx);
+            let _ = tx.send(WorkerEvent::Action {
+                level,
+                message,
+                refresh,
+            });
+        });
+        self.worker = Some(rx);
+    }
+
+    fn apply_statuses(&mut self, statuses: Vec<SkillStatus>) {
+        let selected_name = self.selected_status().map(|s| s.name.clone());
+        self.statuses = statuses;
+        if let Some(name) = selected_name
+            && let Some(index) = self
+                .visible_indices()
+                .into_iter()
+                .position(|i| self.statuses.get(i).map(|s| &s.name) == Some(&name))
+        {
+            self.selected = index;
+        }
+        self.clamp_selection();
     }
 
     pub fn tick(&mut self) {
         self.spinner.tick();
         self.notice.tick();
+        if let Some(network) = &mut self.network {
+            network.frame = network.frame.wrapping_add(1);
+        }
         self.poll_worker();
+    }
+
+    fn finish_worker(&mut self) {
+        self.busy = false;
+        self.spinner.stop();
+        self.network = None;
+        self.worker = None;
     }
 
     fn poll_worker(&mut self) {
@@ -204,36 +320,28 @@ impl App {
             return;
         };
         match receiver.try_recv() {
-            Ok(WorkerEvent::Status(statuses)) => {
-                let selected_name = self.selected_status().map(|s| s.name.clone());
-                self.statuses = statuses;
-                if let Some(name) = selected_name
-                    && let Some(index) = self
-                        .visible_indices()
-                        .into_iter()
-                        .position(|i| self.statuses.get(i).map(|s| &s.name) == Some(&name))
-                {
-                    self.selected = index;
-                }
-                self.clamp_selection();
-                self.busy = false;
-                self.spinner.stop();
-                self.worker = None;
-                self.notice
-                    .show(NoticeLevel::Info, "upstream status refreshed");
+            Ok(WorkerEvent::Refreshed(Ok(statuses))) => {
+                self.apply_statuses(statuses);
+                self.finish_worker();
             }
-            Ok(WorkerEvent::Error(message)) => {
-                self.busy = false;
-                self.spinner.stop();
-                self.worker = None;
+            Ok(WorkerEvent::Refreshed(Err(message))) => {
+                self.finish_worker();
                 self.notice.show(NoticeLevel::Error, message);
             }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.busy = false;
-                self.spinner.stop();
-                self.worker = None;
+            Ok(WorkerEvent::Action {
+                level,
+                message,
+                refresh,
+            }) => {
+                self.finish_worker();
+                self.notice.show(level, message);
+                self.reload();
+                if refresh && self.registry.is_some() {
+                    self.refresh_quietly();
+                }
             }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => self.finish_worker(),
         }
     }
 
@@ -252,7 +360,8 @@ impl App {
                     status.source,
                     status.description.as_deref().unwrap_or(""),
                     match &status.origin {
-                        skillmgr_core::registry::Origin::Vendored { repo, path, .. } => {
+                        skillmgr_core::registry::Origin::Vendored { repo, path, .. }
+                        | skillmgr_core::registry::Origin::Repo { repo, path, .. } => {
                             format!("{repo} {path}")
                         }
                         skillmgr_core::registry::Origin::Authored => String::new(),
@@ -463,63 +572,116 @@ impl App {
     }
 
     fn submit(&mut self, submission: Submission) {
-        let result = (|| -> skillmgr_core::Result<String> {
-            match submission {
-                Submission::Add {
-                    repo,
-                    path,
-                    name,
-                    branch,
-                    rev,
-                } => {
-                    let mut registry = self.ctx.load()?;
-                    let outcome = ops::add(
-                        &self.ctx,
-                        ops::AddOptions {
-                            repo,
-                            path,
-                            name,
-                            branch,
-                            rev,
-                            no_fetch: false,
-                            no_install: false,
-                        },
-                        &mut registry,
-                    )?;
-                    Ok(format!(
-                        "added {} at {}",
-                        outcome.entry.name,
-                        outcome
-                            .entry
-                            .rev()
-                            .map(|rev| rev.chars().take(9).collect::<String>())
-                            .unwrap_or_else(|| "-".to_string())
-                    ))
-                }
-                Submission::New { name, description } => {
+        match submission {
+            Submission::Add {
+                repo,
+                path,
+                name,
+                branch,
+                rev,
+            } => self.begin_add(repo, path, name, branch, rev),
+            Submission::New { name, description } => {
+                let result = (|| -> skillmgr_core::Result<String> {
                     let mut registry = self.ctx.load()?;
                     ops::new_skill(&self.ctx, &mut registry, &name, &description, false)?;
                     Ok(format!("created authored skill {name}"))
-                }
-                Submission::Adopt { name, from } => {
+                })();
+                self.finish_local(result);
+            }
+            Submission::Adopt { name, from } => {
+                let result = (|| -> skillmgr_core::Result<String> {
                     let mut registry = self.ctx.load()?;
                     ops::adopt(&self.ctx, &mut registry, &name, from.as_deref(), false)?;
                     Ok(format!("adopted {name}"))
-                }
+                })();
+                self.finish_local(result);
             }
-        })();
-
-        match result {
-            Ok(message) => {
-                self.notice.show(NoticeLevel::Info, message);
-                self.reload();
-                self.refresh();
-            }
-            Err(e) => self.error(e.to_string()),
         }
     }
 
+    /// Declare the repository synchronously, then resolve it off the UI thread.
+    fn begin_add(
+        &mut self,
+        repo: String,
+        path: String,
+        name: Option<String>,
+        branch: Option<String>,
+        rev: Option<String>,
+    ) {
+        let mut registry = match self.ctx.load() {
+            Ok(registry) => registry,
+            Err(e) => {
+                self.error(e.to_string());
+                return;
+            }
+        };
+        let opts = ops::AddOptions {
+            repo,
+            path,
+            name,
+            branch,
+            rev,
+            no_fetch: false,
+            no_install: false,
+        };
+        let entry = match ops::declare_repo(&self.ctx, &opts, &mut registry) {
+            Ok(entry) => entry,
+            Err(e) => {
+                self.error(e.to_string());
+                return;
+            }
+        };
+
+        let label = entry.repo().unwrap_or(&entry.name).to_string();
+        let name = entry.name.clone();
+        self.notice
+            .show(NoticeLevel::Info, format!("fetching {label}…"));
+        self.reload();
+        self.spawn_action_urgent(format!("fetching {label}"), true, move |ctx| {
+            let mut registry = match ctx.load() {
+                Ok(registry) => registry,
+                Err(e) => return (NoticeLevel::Error, e.to_string(), false),
+            };
+            let report = ops::resolve_repo(ctx, &mut registry, &name, true, false);
+            if report.error.is_some() {
+                (NoticeLevel::Warn, report.summary(), false)
+            } else {
+                (NoticeLevel::Info, report.summary(), true)
+            }
+        });
+    }
+
+    /// Retry an unresolved repository entry, e.g. after a network failure.
+    fn retry_repo(&mut self, name: String, label: String) {
+        self.notice
+            .show(NoticeLevel::Info, format!("fetching {label}…"));
+        self.spawn_action_urgent(format!("fetching {label}"), true, move |ctx| {
+            let mut registry = match ctx.load() {
+                Ok(registry) => registry,
+                Err(e) => return (NoticeLevel::Error, e.to_string(), false),
+            };
+            let report = ops::resolve_repo(ctx, &mut registry, &name, true, false);
+            if report.error.is_some() {
+                (NoticeLevel::Warn, report.summary(), false)
+            } else {
+                (NoticeLevel::Info, report.summary(), true)
+            }
+        });
+    }
+
     fn run_confirm(&mut self, action: ConfirmAction) {
+        match action {
+            ConfirmAction::UpdateAll => {
+                self.perform_update(true);
+                return;
+            }
+            ConfirmAction::SyncAll => {
+                self.perform_sync(true);
+                return;
+            }
+            _ => {}
+        }
+
         let result = (|| -> skillmgr_core::Result<String> {
             let mut registry = self.ctx.load()?;
             match action {
@@ -535,31 +697,6 @@ impl App {
                         },
                     )?;
                     Ok(format!("removed {name}"))
-                }
-                ConfirmAction::UpdateAll => {
-                    let outcomes = ops::update(
-                        &self.ctx,
-                        &mut registry,
-                        &[],
-                        ops::UpdateOptions {
-                            to: None,
-                            branch: None,
-                            no_fetch: false,
-                            dry_run: false,
-                            no_install: false,
-                        },
-                    )?;
-                    Ok(format!("updated {} skill(s)", outcomes.len()))
-                }
-                ConfirmAction::SyncAll => {
-                    let outcomes = ops::sync(&self.ctx, &mut registry, &[], false, false)?;
-                    Ok(format!(
-                        "synced {} skill(s)",
-                        outcomes
-                            .iter()
-                            .filter(|o| o.state != skillmgr_core::vendor::VendoredState::Current)
-                            .count()
-                    ))
                 }
                 ConfirmAction::InstallAll => {
                     let report = ops::install_skills(&self.ctx, &registry, &[], false, true)?;
@@ -580,29 +717,48 @@ impl App {
                     )?;
                     Ok(format!("unlinked {}", report.removed.len()))
                 }
+                ConfirmAction::UpdateAll | ConfirmAction::SyncAll => unreachable!(),
             }
         })();
 
-        match result {
-            Ok(message) => {
-                self.notice.show(NoticeLevel::Info, message);
-                self.reload();
-                self.refresh();
-            }
-            Err(e) => self.error(e.to_string()),
-        }
+        self.finish_local(result);
     }
 
     fn perform_update(&mut self, all: bool) {
-        let Some(name) = self.selected_name() else {
-            self.notice.show(NoticeLevel::Warn, "no skill selected");
+        if !all
+            && let Some(status) = self.selected_status()
+            && status.is_repo()
+        {
+            let label = status
+                .repo_target()
+                .map(|(repo, _)| repo.to_string())
+                .unwrap_or_else(|| status.name.clone());
+            self.retry_repo(status.name.clone(), label);
             return;
+        }
+        let names = if all {
+            Vec::new()
+        } else {
+            match self.selected_name() {
+                Some(name) => vec![name],
+                None => {
+                    self.notice.show(NoticeLevel::Warn, "no skill selected");
+                    return;
+                }
+            }
         };
-        let names = if all { Vec::new() } else { vec![name] };
-        let result = (|| -> skillmgr_core::Result<String> {
-            let mut registry = self.ctx.load()?;
-            let outcomes = ops::update(
-                &self.ctx,
+        let label = if all {
+            "updating all skills".to_string()
+        } else {
+            "updating skill".to_string()
+        };
+        self.spawn_action(label, true, move |ctx| {
+            let mut registry = match ctx.load() {
+                Ok(registry) => registry,
+                Err(e) => return (NoticeLevel::Error, e.to_string(), false),
+            };
+            match ops::update(
+                ctx,
                 &mut registry,
                 &names,
                 ops::UpdateOptions {
@@ -612,30 +768,65 @@ impl App {
                     dry_run: false,
                     no_install: false,
                 },
-            )?;
-            Ok(format!("updated {} skill(s)", outcomes.len()))
-        })();
-        self.finish(result);
+            ) {
+                Ok(outcomes) => (
+                    NoticeLevel::Info,
+                    format!("updated {} skill(s)", outcomes.len()),
+                    true,
+                ),
+                Err(e) => (NoticeLevel::Error, e.to_string(), false),
+            }
+        });
     }
 
     fn perform_sync(&mut self, all: bool) {
-        let Some(name) = self.selected_name() else {
-            self.notice.show(NoticeLevel::Warn, "no skill selected");
+        if !all
+            && let Some(status) = self.selected_status()
+            && status.is_repo()
+        {
+            let label = status
+                .repo_target()
+                .map(|(repo, _)| repo.to_string())
+                .unwrap_or_else(|| status.name.clone());
+            self.retry_repo(status.name.clone(), label);
             return;
+        }
+        let names = if all {
+            Vec::new()
+        } else {
+            match self.selected_name() {
+                Some(name) => vec![name],
+                None => {
+                    self.notice.show(NoticeLevel::Warn, "no skill selected");
+                    return;
+                }
+            }
         };
-        let names = if all { Vec::new() } else { vec![name] };
-        let result = (|| -> skillmgr_core::Result<String> {
-            let mut registry = self.ctx.load()?;
-            let outcomes = ops::sync(&self.ctx, &mut registry, &names, false, false)?;
-            Ok(format!(
-                "synced {} skill(s)",
-                outcomes
-                    .iter()
-                    .filter(|o| o.state != skillmgr_core::vendor::VendoredState::Current)
-                    .count()
-            ))
-        })();
-        self.finish(result);
+        let label = if all {
+            "syncing all skills".to_string()
+        } else {
+            "syncing skill".to_string()
+        };
+        self.spawn_action(label, true, move |ctx| {
+            let mut registry = match ctx.load() {
+                Ok(registry) => registry,
+                Err(e) => return (NoticeLevel::Error, e.to_string(), false),
+            };
+            match ops::sync(ctx, &mut registry, &names, false, false) {
+                Ok(outcomes) => (
+                    NoticeLevel::Info,
+                    format!(
+                        "synced {} skill(s)",
+                        outcomes
+                            .iter()
+                            .filter(|o| o.state != skillmgr_core::vendor::VendoredState::Current)
+                            .count()
+                    ),
+                    true,
+                ),
+                Err(e) => (NoticeLevel::Error, e.to_string(), false),
+            }
+        });
     }
 
     fn perform_install(&mut self, all: bool) {
@@ -653,7 +844,7 @@ impl App {
                 Ok(format!("{} conflict(s)", report.conflicts.len()))
             }
         })();
-        self.finish(result);
+        self.finish_local(result);
     }
 
     fn perform_uninstall_selected(&mut self) {
@@ -672,15 +863,15 @@ impl App {
             )?;
             Ok(format!("unlinked {}", report.removed.len()))
         })();
-        self.finish(result);
+        self.finish_local(result);
     }
 
-    fn finish(&mut self, result: skillmgr_core::Result<String>) {
+    fn finish_local(&mut self, result: skillmgr_core::Result<String>) {
         match result {
             Ok(message) => {
                 self.notice.show(NoticeLevel::Info, message);
                 self.reload();
-                self.refresh();
+                self.refresh_quietly();
             }
             Err(e) => self.error(e.to_string()),
         }
@@ -692,7 +883,7 @@ impl App {
                 self.notice
                     .show(NoticeLevel::Info, "managed directory initialized");
                 self.reload();
-                self.refresh();
+                self.refresh_quietly();
             }
             Err(e) => self.error(e.to_string()),
         }
@@ -749,7 +940,7 @@ impl Form {
     fn new(kind: FormKind) -> Self {
         match kind {
             FormKind::Add => Self {
-                title: "Vendor a skill",
+                title: "Vendor a skill or repository",
                 kind,
                 fields: vec![
                     Field {
@@ -759,7 +950,7 @@ impl Form {
                     },
                     Field {
                         label: "path",
-                        placeholder: ".",
+                        placeholder: "auto: every SKILL.md",
                         value: String::new(),
                     },
                     Field {

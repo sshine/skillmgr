@@ -787,8 +787,8 @@ dependencies = [
 
 [[package]]
 name = "promptui-core"
-version = "0.1.0"
-source = "git+https://github.com/sshine/promptui?rev=48e0533e8fa487b4a27a6a18dd9f672685416926#48e0533e8fa487b4a27a6a18dd9f672685416926"
+version = "0.1.1"
+source = "git+https://github.com/sshine/promptui?rev=90781cdd104e66a543af43ce1af897e9038886b3#90781cdd104e66a543af43ce1af897e9038886b3"
 dependencies = [
  "crossterm",
  "ratatui",
