@@ -33,7 +33,7 @@ rustPlatform.buildRustPackage {
     lockFile = ../Cargo.lock;
     outputHashes = {
       # promptui-core comes from a git URL, so Nix needs the checkout's hash.
-      "promptui-core-0.1.0" = "sha256-ZqTJ33QmspaOw7nPMVjfhrt13/I8J4SkQLyVFHy9pMU=";
+      "promptui-core-0.1.1" = "sha256-cN6spAWuMxtZIao4fkzTI4wGRZcKToBZlh8aLJHo40Q=";
     };
   };
 
