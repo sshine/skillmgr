@@ -24,6 +24,10 @@ pub struct Args {
     #[arg(long, global = true, value_name = "DIR")]
     pub cache_dir: Option<PathBuf>,
 
+    /// Wizard state directory. Defaults to $XDG_STATE_HOME/skillmgr.
+    #[arg(long, global = true, value_name = "DIR")]
+    pub state_dir: Option<PathBuf>,
+
     /// Never fetch; use only cached origins and vendored copies.
     #[arg(long, global = true)]
     pub offline: bool,

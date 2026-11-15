@@ -10,6 +10,7 @@ pub mod repo;
 pub mod skill;
 pub mod status;
 pub mod vendor;
+pub mod wizard;
 
 pub use error::{Error, Result};
 pub use paths::Paths;

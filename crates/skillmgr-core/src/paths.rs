@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
-/// The managed home, the active skills directory, and the disposable origin cache.
+/// The managed home, the active skills directory, the disposable origin cache,
+/// and the directory for wizard state.
 #[derive(Debug, Clone)]
 pub struct Paths {
     root: PathBuf,
     dest: PathBuf,
     cache: PathBuf,
+    state: PathBuf,
 }
 
 impl Paths {
@@ -18,6 +20,7 @@ impl Paths {
         root: Option<PathBuf>,
         dest: Option<PathBuf>,
         cache: Option<PathBuf>,
+        state: Option<PathBuf>,
     ) -> Result<Self> {
         let home = home_dir()?;
 
@@ -29,11 +32,18 @@ impl Paths {
                 .unwrap_or_else(|| home.join(".cache"))
                 .join("skillmgr/origins")
         });
+        let state = state.unwrap_or_else(|| {
+            std::env::var_os("XDG_STATE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".local/state"))
+                .join("skillmgr")
+        });
 
         Ok(Self {
             root: absolute(root)?,
             dest: absolute(dest)?,
             cache: absolute(cache)?,
+            state: absolute(state)?,
         })
     }
 
@@ -50,6 +60,16 @@ impl Paths {
     /// The origin cache root.
     pub fn cache(&self) -> &Path {
         &self.cache
+    }
+
+    /// The directory containing wizard state.
+    pub fn state_dir(&self) -> &Path {
+        &self.state
+    }
+
+    /// `state.toml`, which remembers answers to optional setup questions.
+    pub fn state(&self) -> PathBuf {
+        self.state.join("state.toml")
     }
 
     /// `skills.toml` inside the managed home.
@@ -128,6 +148,7 @@ mod tests {
             Some(PathBuf::from("/tmp/skillmgr-root")),
             Some(PathBuf::from("/tmp/skillmgr-dest")),
             Some(PathBuf::from("/tmp/skillmgr-cache")),
+            Some(PathBuf::from("/tmp/skillmgr-state")),
         )
         .expect("paths");
         assert_eq!(
@@ -137,6 +158,10 @@ mod tests {
         assert_eq!(
             paths.skill_dir("authored", "blog-post"),
             PathBuf::from("/tmp/skillmgr-root/skills/authored/blog-post")
+        );
+        assert_eq!(
+            paths.state(),
+            PathBuf::from("/tmp/skillmgr-state/state.toml")
         );
     }
 }

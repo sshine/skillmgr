@@ -15,6 +15,7 @@
           package = rust-toolchain;
         };
         programs.mdformat.enable = true;
+        settings.formatter.mdformat.excludes = [ "skills/**" ];
       };
     };
 }

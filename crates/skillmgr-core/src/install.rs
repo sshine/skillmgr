@@ -293,6 +293,7 @@ mod tests {
             Some(dir.path().join("root")),
             Some(dir.path().join("dest")),
             Some(dir.path().join("cache")),
+            Some(dir.path().join("state")),
         )
         .expect("paths");
         std::fs::create_dir_all(paths.dest().join("foo")).expect("dest");

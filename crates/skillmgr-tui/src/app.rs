@@ -1,5 +1,6 @@
 //! Dashboard state and key handling.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Instant;
@@ -13,8 +14,11 @@ use promptui_core::widgets::text_field::{TextField, TextFieldAction};
 use skillmgr_core::ops::{self, Context, RemoveOptions};
 use skillmgr_core::registry::Registry;
 use skillmgr_core::status::SkillStatus;
+use skillmgr_core::wizard::{Answer, State as WizardState};
 
 use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
+
+use crate::wizard::{WizardAction, WizardPrompt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -75,6 +79,7 @@ pub enum ConfirmAction {
     SyncAll,
     InstallAll,
     Uninstall(String),
+    Wizard(WizardPrompt),
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +137,7 @@ pub struct App {
     pub should_quit: bool,
     worker: Option<Receiver<WorkerEvent>>,
     pending_edit: Option<PathBuf>,
+    wizard_deferred: BTreeSet<&'static str>,
 }
 
 impl App {
@@ -161,8 +167,10 @@ impl App {
             should_quit: false,
             worker: None,
             pending_edit: None,
+            wizard_deferred: BTreeSet::new(),
         };
         app.reload();
+        app.maybe_ask_wizard();
         app
     }
 
@@ -537,11 +545,30 @@ impl App {
                     return;
                 };
                 self.mode = Mode::Normal;
-                self.run_confirm(confirm.action);
+                match confirm.action {
+                    ConfirmAction::Wizard(prompt) => self.answer_wizard(prompt, true),
+                    action => self.run_confirm(action),
+                }
             }
-            Input::Char('n') | Input::Char('N') | Input::Esc => {
-                self.confirm = None;
+            Input::Char('n') | Input::Char('N') => {
+                let Some(confirm) = self.confirm.take() else {
+                    self.mode = Mode::Normal;
+                    return;
+                };
                 self.mode = Mode::Normal;
+                if let ConfirmAction::Wizard(prompt) = confirm.action {
+                    self.answer_wizard(prompt, false);
+                }
+            }
+            Input::Esc => {
+                let Some(confirm) = self.confirm.take() else {
+                    self.mode = Mode::Normal;
+                    return;
+                };
+                self.mode = Mode::Normal;
+                if let ConfirmAction::Wizard(prompt) = confirm.action {
+                    self.wizard_deferred.insert(prompt.id);
+                }
             }
             _ => {}
         }
@@ -717,7 +744,9 @@ impl App {
                     )?;
                     Ok(format!("unlinked {}", report.removed.len()))
                 }
-                ConfirmAction::UpdateAll | ConfirmAction::SyncAll => unreachable!(),
+                ConfirmAction::UpdateAll | ConfirmAction::SyncAll | ConfirmAction::Wizard(_) => {
+                    unreachable!()
+                }
             }
         })();
 
@@ -884,9 +913,71 @@ impl App {
                     .show(NoticeLevel::Info, "managed directory initialized");
                 self.reload();
                 self.refresh_quietly();
+                self.maybe_ask_wizard();
             }
             Err(e) => self.error(e.to_string()),
         }
+    }
+
+    /// Offer any optional setup questions that have not been answered yet.
+    fn maybe_ask_wizard(&mut self) {
+        if self.mode != Mode::Normal {
+            return;
+        }
+
+        let state = match WizardState::load(&self.ctx.paths.state(), self.ctx.paths.root()) {
+            Ok(state) => state,
+            Err(e) => {
+                self.error(format!("could not load wizard state: {e}"));
+                return;
+            }
+        };
+        let prompt = self.registry.as_ref().and_then(|registry| {
+            crate::wizard::next_prompt(&state, registry, &self.wizard_deferred)
+        });
+        if let Some(prompt) = prompt {
+            self.confirm(prompt.question, ConfirmAction::Wizard(prompt));
+        }
+    }
+
+    /// Remember a wizard answer and, when accepted, run its action.
+    fn answer_wizard(&mut self, prompt: WizardPrompt, accepted: bool) {
+        let result = (|| -> skillmgr_core::Result<()> {
+            let mut state = WizardState::load(&self.ctx.paths.state(), self.ctx.paths.root())?;
+            state.record(prompt.spec(), Answer::Bool(accepted))?;
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            self.error(format!("could not save wizard state: {e}"));
+            return;
+        }
+
+        if accepted && prompt.action == WizardAction::ManageSkills {
+            self.perform_install_self_skill();
+        }
+        self.maybe_ask_wizard();
+    }
+
+    /// Vendor skillmgr's own skill so agents know to create new skills here.
+    fn perform_install_self_skill(&mut self) {
+        self.spawn_action_urgent(
+            format!("installing {}", ops::SELF_SKILL_NAME),
+            true,
+            |ctx| {
+                let mut registry = match ctx.load() {
+                    Ok(registry) => registry,
+                    Err(e) => return (NoticeLevel::Error, e.to_string(), false),
+                };
+                match ops::add_self_skill(ctx, &mut registry) {
+                    Ok(report) if report.error.is_some() => {
+                        (NoticeLevel::Warn, report.summary(), false)
+                    }
+                    Ok(report) => (NoticeLevel::Info, report.summary(), true),
+                    Err(e) => (NoticeLevel::Error, e.to_string(), false),
+                }
+            },
+        );
     }
 
     fn edit_selected(&mut self) {

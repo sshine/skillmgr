@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod ui;
+pub mod wizard;
 
 use std::time::Duration;
 

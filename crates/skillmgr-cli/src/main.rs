@@ -127,7 +127,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let args = Args::parse();
-    let paths = Paths::resolve(args.root, args.dest, args.cache_dir)?;
+    let paths = Paths::resolve(args.root, args.dest, args.cache_dir, args.state_dir)?;
     let ctx = Context::new(paths, args.offline);
     let color = Color::new(args.no_color);
 

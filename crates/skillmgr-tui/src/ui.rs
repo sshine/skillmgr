@@ -13,7 +13,7 @@ use skillmgr_core::install::LinkState;
 use skillmgr_core::registry::Origin;
 use skillmgr_core::status::SkillStatus;
 
-use crate::app::{App, Form, Mode};
+use crate::app::{App, ConfirmAction, Form, Mode};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -53,7 +53,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         Mode::Confirm => {
             if let Some(confirm) = &app.confirm {
-                draw_confirm(frame, app, &confirm.prompt, area);
+                let wizard = matches!(confirm.action, ConfirmAction::Wizard(_));
+                draw_confirm(frame, app, &confirm.prompt, wizard, area);
             }
         }
         _ => {}
@@ -447,13 +448,13 @@ fn draw_form(frame: &mut Frame, app: &App, form: &Form, area: Rect) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
-fn draw_confirm(frame: &mut Frame, app: &App, prompt: &str, area: Rect) {
+fn draw_confirm(frame: &mut Frame, app: &App, prompt: &str, wizard: bool, area: Rect) {
     let rect = centered(area, 60, 7);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(app.theme.warning))
-        .title(" confirm ");
+        .title(if wizard { " setup " } else { " confirm " });
     let text = vec![
         Line::from(""),
         Line::from(prompt.to_string()),
@@ -469,7 +470,7 @@ fn draw_confirm(frame: &mut Frame, app: &App, prompt: &str, area: Rect) {
 }
 
 fn draw_init(frame: &mut Frame, app: &App, area: Rect) {
-    let rect = centered(area, 72, 10);
+    let rect = centered(area, 72, 11);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -492,6 +493,10 @@ fn draw_init(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("q", key_style(app.theme)),
             Span::raw(" quit"),
         ]),
+        Line::from(Span::styled(
+            "  You can install the skillmgr skill after initializing.",
+            Style::default().fg(app.theme.text_muted),
+        )),
     ];
     frame.render_widget(Paragraph::new(text).block(block), rect);
 }

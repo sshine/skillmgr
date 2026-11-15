@@ -70,6 +70,11 @@ pub fn init(ctx: &Context, no_git: bool) -> Result<InitReport> {
     })
 }
 
+/// The skillmgr repository and the skill it ships for agents.
+pub const SELF_REPO: &str = "sshine/skillmgr";
+pub const SELF_SKILL_PATH: &str = "skills/manage-skills";
+pub const SELF_SKILL_NAME: &str = "manage-skills";
+
 #[derive(Debug, Clone)]
 pub struct AddOptions {
     pub repo: String,
@@ -407,6 +412,34 @@ pub fn add(ctx: &Context, opts: AddOptions, registry: &mut Registry) -> Result<R
         !opts.no_fetch,
         opts.no_install,
     ))
+}
+
+/// Vendor skillmgr's own `manage-skills` skill.
+///
+/// The first-run prompt is safe to repeat: an existing entry is reported
+/// without touching the network or replacing the user's copy.
+pub fn add_self_skill(ctx: &Context, registry: &mut Registry) -> Result<ResolveReport> {
+    if registry.contains(SELF_SKILL_NAME) {
+        return Ok(ResolveReport {
+            repo: SELF_REPO.to_string(),
+            note: Some(format!("{SELF_SKILL_NAME} is already registered")),
+            ..ResolveReport::default()
+        });
+    }
+
+    add(
+        ctx,
+        AddOptions {
+            repo: SELF_REPO.to_string(),
+            path: SELF_SKILL_PATH.to_string(),
+            name: Some(SELF_SKILL_NAME.to_string()),
+            branch: None,
+            rev: None,
+            no_fetch: false,
+            no_install: false,
+        },
+        registry,
+    )
 }
 
 fn unique_name(registry: &Registry, requested: &str) -> String {

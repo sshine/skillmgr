@@ -35,6 +35,7 @@ impl Fixture {
             Some(self.dir.path().join("root")),
             Some(self.dir.path().join("dest")),
             Some(self.dir.path().join("cache")),
+            Some(self.dir.path().join("state")),
         )
         .expect("paths");
         let ctx = Context::new(paths, false);
@@ -294,6 +295,7 @@ fn a_repository_without_skills_is_kept_as_an_empty_repository() {
         Some(dir.path().join("root")),
         Some(dir.path().join("dest")),
         Some(dir.path().join("cache")),
+        Some(dir.path().join("state")),
     )
     .expect("paths");
     let ctx = Context::new(paths, false);
@@ -360,6 +362,37 @@ fn an_unreachable_repository_stays_as_a_faulty_entry() {
     assert!(report.conflicts.is_empty());
     let statuses = ops::list(&ctx, &registry, &[], false, false).expect("list");
     assert!(statuses.iter().any(|s| s.is_repo()));
+}
+
+#[test]
+fn the_repository_ships_the_manage_skills_skill() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../skills")
+        .join(ops::SELF_SKILL_NAME)
+        .join("SKILL.md");
+    let content = std::fs::read_to_string(&path).expect("skill file");
+    let meta = skillmgr_core::skill::parse_meta(&content).expect("frontmatter");
+    assert_eq!(meta.name.as_deref(), Some(ops::SELF_SKILL_NAME));
+    assert_eq!(ops::SELF_SKILL_PATH, "skills/manage-skills");
+    assert!(meta.description.is_some());
+}
+
+#[test]
+fn the_self_skill_is_not_vendored_twice() {
+    let fixture = Fixture::new();
+    let ctx = fixture.context();
+    let mut registry = ctx.load().expect("registry");
+    ops::new_skill(&ctx, &mut registry, ops::SELF_SKILL_NAME, "Mine.", false).expect("new");
+
+    let report = ops::add_self_skill(&ctx, &mut registry).expect("self skill");
+    assert!(report.error.is_none());
+    assert!(report.entries.is_empty());
+    assert!(
+        report
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("already registered"))
+    );
 }
 
 #[test]

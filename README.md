@@ -158,6 +158,18 @@ as a `faulty` entry rather than closing the dialog with an error. Upstream check
 run in the background, and the detail pane reads the selected skill's `SKILL.md`,
 origin, pin, link state and behind counts.
 
+On first run, initializing the managed directory also offers to vendor skillmgr's
+own `manage-skills` skill from `sshine/skillmgr`. That skill teaches agents to
+create new skills in the managed repository, to look for existing skills there
+first, and to install discovered skills with `skillmgr add` instead of copying
+them into a harness directory.
+
+Optional setup questions are asked once. Answers live in
+`$XDG_STATE_HOME/skillmgr/state.toml` by default
+(`~/.local/state/skillmgr/state.toml`), keyed by managed root. A question is
+asked again only when it is new or its version changes. Use `--state-dir` to
+put this file elsewhere.
+
 ## CLI
 
 ## skillmgr

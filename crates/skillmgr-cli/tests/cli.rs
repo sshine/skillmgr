@@ -52,6 +52,10 @@ impl Fixture {
         self.dir.path().join("cache")
     }
 
+    fn state(&self) -> PathBuf {
+        self.dir.path().join("state")
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::cargo_bin("skillmgr").expect("binary");
         command
@@ -61,6 +65,8 @@ impl Fixture {
             .arg(self.dest())
             .arg("--cache-dir")
             .arg(self.cache())
+            .arg("--state-dir")
+            .arg(self.state())
             .arg("--no-color");
         command
     }
