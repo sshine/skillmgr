@@ -26,6 +26,7 @@ rustPlatform.buildRustPackage {
       ../Cargo.toml
       ../Cargo.lock
       ../crates
+      ../skills
       ../README.md
     ];
   };
