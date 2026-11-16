@@ -112,6 +112,12 @@ pub fn install(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
             if !desired.contains(&name) {
+                // Prune only links whose skill is actually gone. A link whose
+                // skill is merely unregistered still points at a real managed
+                // directory, so keep it: `register` can adopt it again.
+                if link.is_dir() {
+                    continue;
+                }
                 if !dry_run {
                     remove_link(&link)?;
                 }

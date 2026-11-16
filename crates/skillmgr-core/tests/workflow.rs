@@ -261,16 +261,22 @@ fn installing_one_skill_keeps_every_other_link() {
 }
 
 #[test]
-fn a_full_install_still_prunes_links_for_unregistered_skills() {
+fn a_full_install_still_prunes_links_whose_skill_is_gone() {
     let fixture = Fixture::new();
     let ctx = fixture.context();
     let mut registry = ctx.load().expect("registry");
     ops::new_skill(&ctx, &mut registry, "alpha", "Alpha.", false).expect("alpha");
     ops::new_skill(&ctx, &mut registry, "beta", "Beta.", false).expect("beta");
 
+    // Unregistering a skill that still exists must not unlink it.
     assert!(registry.remove("beta").is_some());
     registry.save().expect("save");
+    let report = ops::install_skills(&ctx, &registry, &[], false, true).expect("install");
+    assert!(report.pruned.is_empty());
+    assert!(ctx.paths.dest().join("beta").is_symlink());
 
+    // Once the managed directory is gone, the link is stale and is pruned.
+    std::fs::remove_dir_all(ctx.paths.skill_dir("authored", "beta")).expect("remove");
     let report = ops::install_skills(&ctx, &registry, &[], false, true).expect("install");
     assert_eq!(report.pruned, vec!["beta".to_string()]);
     assert!(ctx.paths.dest().join("alpha").is_symlink());
