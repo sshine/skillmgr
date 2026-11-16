@@ -11,6 +11,7 @@ use promptui_core::widgets::notice::{Notice, NoticeLevel};
 use promptui_core::widgets::spinner::{Spinner, SpinnerStyle};
 use promptui_core::widgets::text_field::{TextField, TextFieldAction};
 
+use skillmgr_core::git::Upstream;
 use skillmgr_core::ops::{self, Context, RemoveOptions};
 use skillmgr_core::registry::Registry;
 use skillmgr_core::status::SkillStatus;
@@ -293,18 +294,26 @@ impl App {
         self.worker = Some(rx);
     }
 
-    fn apply_statuses(&mut self, statuses: Vec<SkillStatus>) {
-        let selected_name = self.selected_status().map(|s| s.name.clone());
-        self.statuses = statuses;
-        if let Some(name) = selected_name
-            && let Some(index) = self
-                .visible_indices()
-                .into_iter()
-                .position(|i| self.statuses.get(i).map(|s| &s.name) == Some(&name))
-        {
-            self.selected = index;
+    /// Apply a completed refresh without trusting its snapshot of local state.
+    ///
+    /// The refresh runs on a worker thread while the user may install or remove
+    /// skills. Its link states are therefore a snapshot from before those
+    /// changes. Re-read the local inventory and keep only the upstream data,
+    /// which is what the refresh actually contributes.
+    fn apply_refreshed(&mut self, refreshed: Vec<SkillStatus>) {
+        let upstream: Vec<(String, String, Option<Upstream>)> = refreshed
+            .into_iter()
+            .map(|status| (status.name, status.source, status.upstream))
+            .collect();
+        self.reload();
+        for status in &mut self.statuses {
+            if let Some((_, _, upstream)) = upstream
+                .iter()
+                .find(|(name, source, _)| name == &status.name && source == &status.source)
+            {
+                status.upstream = upstream.clone();
+            }
         }
-        self.clamp_selection();
     }
 
     pub fn tick(&mut self) {
@@ -329,8 +338,8 @@ impl App {
         };
         match receiver.try_recv() {
             Ok(WorkerEvent::Refreshed(Ok(statuses))) => {
-                self.apply_statuses(statuses);
                 self.finish_worker();
+                self.apply_refreshed(statuses);
             }
             Ok(WorkerEvent::Refreshed(Err(message))) => {
                 self.finish_worker();
@@ -1156,4 +1165,57 @@ impl Form {
 
 fn non_empty(value: String) -> Option<String> {
     if value.is_empty() { None } else { Some(value) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skillmgr_core::install::LinkState;
+    use skillmgr_core::paths::Paths;
+
+    #[test]
+    fn a_stale_refresh_does_not_hide_links_installed_while_it_ran() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = Paths::resolve(
+            Some(dir.path().join("root")),
+            Some(dir.path().join("dest")),
+            Some(dir.path().join("cache")),
+            Some(dir.path().join("state")),
+        )
+        .expect("paths");
+        let ctx = Context::new(paths, true);
+        ops::init(&ctx, true).expect("init");
+        let mut registry = ctx.load().expect("registry");
+        ops::new_skill(&ctx, &mut registry, "alpha", "Alpha.", false).expect("alpha");
+        ops::new_skill(&ctx, &mut registry, "beta", "Beta.", false).expect("beta");
+
+        let mut app = App::new(ctx.clone());
+
+        // A refresh starts while alpha is unlinked.
+        ops::uninstall_skills(&ctx, &registry, &["alpha".to_string()], false, false)
+            .expect("uninstall");
+        let mut stale = ops::list(&ctx, &registry, &[], false, false).expect("list");
+        let alpha = stale
+            .iter_mut()
+            .find(|status| status.name == "alpha")
+            .expect("alpha");
+        assert_eq!(alpha.link, LinkState::Unlinked);
+        alpha.upstream = Some(Upstream::Current);
+
+        // The user links it while the refresh is still fetching upstream.
+        ops::install_skills(&ctx, &registry, &["alpha".to_string()], false, false)
+            .expect("install");
+
+        // The late result must keep the upstream data without reverting the
+        // link state the user just created.
+        app.apply_refreshed(stale);
+
+        let alpha = app
+            .statuses
+            .iter()
+            .find(|status| status.name == "alpha")
+            .expect("alpha");
+        assert_eq!(alpha.link, LinkState::Linked);
+        assert_eq!(alpha.upstream, Some(Upstream::Current));
+    }
 }
