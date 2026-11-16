@@ -319,14 +319,15 @@ impl EnvFixture {
             .success();
     }
 
-    fn tui(&self, keys: &[u8]) {
+    /// Drive the real dashboard through a pseudo-terminal, returning `false`
+    /// when the environment has no `script` command to allocate one.
+    fn tui(&self, keys: &[u8]) -> bool {
         use std::io::Write;
         use std::process::Stdio;
         use std::time::{Duration, Instant};
 
         if Command::new("script").arg("--version").output().is_err() {
-            eprintln!("skipping the TUI part: `script` is not available");
-            return;
+            return false;
         }
 
         let binary = env!("CARGO_BIN_EXE_skillmgr");
@@ -361,6 +362,7 @@ impl EnvFixture {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        true
     }
 }
 
@@ -439,7 +441,10 @@ fn the_tui_uses_the_environment_paths_and_installs_one_skill() {
     // No manage-skills entry yet, so the dashboard asks its setup question.
     // Declining writes the answer below SKILLMGR_STATE_DIR, proving the state
     // path is redirected too.
-    fixture.tui(b"nq");
+    if !fixture.tui(b"nq") {
+        eprintln!("skipping the TUI assertions: `script` is not available");
+        return;
+    }
     assert!(fixture.state.join("state.toml").is_file());
     assert!(!fixture.home.join(".agents").exists());
 
