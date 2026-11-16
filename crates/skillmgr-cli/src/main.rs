@@ -97,6 +97,12 @@
 //! For NixOS, add the flake as an input and use `pkgs.skillmgr` from the overlay, or
 //! the prebuilt `skillmgr-bin` package from the release.
 //!
+//! Every default path can also be redirected from the environment:
+//! `SKILLMGR_ROOT`, `SKILLMGR_DEST`, `SKILLMGR_CACHE_DIR` and
+//! `SKILLMGR_STATE_DIR`. The matching command-line flags win over the
+//! environment. This keeps a test or a throwaway run away from the real
+//! `~/.agents/` directory.
+//!
 //! `git` must be on `PATH`; the Nix package wraps the binary with it.
 
 mod args;

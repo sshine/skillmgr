@@ -12,19 +12,23 @@ use clap::{Parser, Subcommand, ValueEnum};
     long_about = None,
 )]
 pub struct Args {
-    /// Managed skill directory. Defaults to ~/.agents/managed-skills.
+    /// Managed skill directory. Defaults to $SKILLMGR_ROOT, else
+    /// ~/.agents/managed-skills.
     #[arg(long, global = true, value_name = "DIR")]
     pub root: Option<PathBuf>,
 
-    /// Active skills directory. Defaults to ~/.agents/skills.
+    /// Active skills directory. Defaults to $SKILLMGR_DEST, else
+    /// ~/.agents/skills.
     #[arg(long, global = true, value_name = "DIR")]
     pub dest: Option<PathBuf>,
 
-    /// Origin cache. Defaults to $XDG_CACHE_HOME/skillmgr/origins.
+    /// Origin cache. Defaults to $SKILLMGR_CACHE_DIR, else
+    /// $XDG_CACHE_HOME/skillmgr/origins.
     #[arg(long, global = true, value_name = "DIR")]
     pub cache_dir: Option<PathBuf>,
 
-    /// Wizard state directory. Defaults to $XDG_STATE_HOME/skillmgr.
+    /// Wizard state directory. Defaults to $SKILLMGR_STATE_DIR, else
+    /// $XDG_STATE_HOME/skillmgr.
     #[arg(long, global = true, value_name = "DIR")]
     pub state_dir: Option<PathBuf>,
 

@@ -15,7 +15,13 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Resolve paths from optional CLI overrides, falling back to the defaults.
+    /// Resolve paths from optional CLI overrides, then environment variables,
+    /// falling back to the defaults.
+    ///
+    /// `SKILLMGR_ROOT`, `SKILLMGR_DEST`, `SKILLMGR_CACHE_DIR` and
+    /// `SKILLMGR_STATE_DIR` name each path independently. This makes the binary
+    /// fully redirectable from the environment, which tests rely on, without
+    /// having to fake `HOME`.
     pub fn resolve(
         root: Option<PathBuf>,
         dest: Option<PathBuf>,
@@ -24,20 +30,26 @@ impl Paths {
     ) -> Result<Self> {
         let home = home_dir()?;
 
-        let root = root.unwrap_or_else(|| home.join(".agents/managed-skills"));
-        let dest = dest.unwrap_or_else(|| home.join(".agents/skills"));
-        let cache = cache.unwrap_or_else(|| {
-            std::env::var_os("XDG_CACHE_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".cache"))
-                .join("skillmgr/origins")
-        });
-        let state = state.unwrap_or_else(|| {
-            std::env::var_os("XDG_STATE_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".local/state"))
-                .join("skillmgr")
-        });
+        let root = root
+            .or_else(|| env_path("SKILLMGR_ROOT"))
+            .unwrap_or_else(|| home.join(".agents/managed-skills"));
+        let dest = dest
+            .or_else(|| env_path("SKILLMGR_DEST"))
+            .unwrap_or_else(|| home.join(".agents/skills"));
+        let cache = cache
+            .or_else(|| env_path("SKILLMGR_CACHE_DIR"))
+            .unwrap_or_else(|| {
+                env_path("XDG_CACHE_HOME")
+                    .unwrap_or_else(|| home.join(".cache"))
+                    .join("skillmgr/origins")
+            });
+        let state = state
+            .or_else(|| env_path("SKILLMGR_STATE_DIR"))
+            .unwrap_or_else(|| {
+                env_path("XDG_STATE_HOME")
+                    .unwrap_or_else(|| home.join(".local/state"))
+                    .join("skillmgr")
+            });
 
         Ok(Self {
             root: absolute(root)?,
@@ -115,6 +127,12 @@ fn home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or(Error::NoHome)
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn absolute(path: PathBuf) -> Result<PathBuf> {
