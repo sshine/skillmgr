@@ -102,7 +102,10 @@ pub fn install(
         }
     }
 
-    if prune {
+    // Pruning is only meaningful for a full install. A named install says
+    // nothing about the links the caller did not ask to install, so it must
+    // never remove them.
+    if prune && names.is_empty() {
         for link in managed_links(paths)? {
             let name = link
                 .file_name()

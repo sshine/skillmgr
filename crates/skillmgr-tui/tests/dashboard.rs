@@ -126,6 +126,34 @@ fn a_faulty_repository_is_visible_and_marked() {
     assert!(text.contains("missing"));
 }
 
+#[test]
+fn installing_one_unlinked_skill_keeps_every_other_link() {
+    let (_dir, ctx) = context("install-one");
+    ops::init(&ctx, true).expect("init");
+    let mut registry = ctx.load().expect("registry");
+    ops::new_skill(&ctx, &mut registry, "alpha", "Alpha.", false).expect("alpha");
+    ops::new_skill(&ctx, &mut registry, "beta", "Beta.", false).expect("beta");
+    ops::uninstall_skills(&ctx, &registry, &["alpha".to_string()], false, false)
+        .expect("uninstall");
+    assert!(!ctx.paths.dest().join("alpha").exists());
+
+    let mut app = App::new(ctx.clone());
+    // Decline the wizard offer so keys reach the dashboard.
+    if app.mode == Mode::Confirm {
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    }
+    assert_eq!(app.mode, Mode::Normal);
+    assert_eq!(
+        app.selected_status().map(|status| status.name.as_str()),
+        Some("alpha")
+    );
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+
+    assert!(ctx.paths.dest().join("alpha").is_symlink());
+    assert!(ctx.paths.dest().join("beta").is_symlink());
+}
+
 fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
     let area = buffer.area();
     let mut text = String::new();

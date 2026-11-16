@@ -864,9 +864,12 @@ impl App {
             return;
         };
         let names = if all { Vec::new() } else { vec![name] };
+        // Only a full install may prune: a single install must leave every
+        // other managed link untouched.
+        let prune = all;
         let result = (|| -> skillmgr_core::Result<String> {
             let registry = self.ctx.load()?;
-            let report = ops::install_skills(&self.ctx, &registry, &names, false, true)?;
+            let report = ops::install_skills(&self.ctx, &registry, &names, false, prune)?;
             if report.conflicts.is_empty() {
                 Ok(format!("linked {}", report.linked.len()))
             } else {
