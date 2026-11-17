@@ -20,10 +20,10 @@
     }:
     let
       release = {
-        version = "0.3.2";
+        version = "0.3.3";
         hashes = {
-          "x86_64-linux" = "sha256-RbMUuGhD5yEVjMJ97jlyZA6XwmIcafGX1fLnLQ/hOKM=";
-          "aarch64-linux" = "sha256-NgckCuACYuhx9pnDFfTVrCK5eGMx2ZJt1lJrCQ7E7lE=";
+          "x86_64-linux" = "sha256-g6/MLilE8txLf95eNNXDJzjPmoXpIIrnNHC7WNbQ55A=";
+          "aarch64-linux" = "sha256-X2fD54OU06H+RXnmWvVjIC+IzGAFzEe0o2MSQweTOcQ=";
         };
       };
 
