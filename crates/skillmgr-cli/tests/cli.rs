@@ -70,6 +70,25 @@ impl Fixture {
             .arg("--no-color");
         command
     }
+
+    /// Write a registry with vendored skills and link them, without git.
+    fn seed_vendored(&self, entries: &[(&str, &str)]) {
+        let mut toml = String::from("schema = 1\n\n");
+        for (name, repo) in entries {
+            let dir = self.root().join("skills/vendored").join(name);
+            std::fs::create_dir_all(&dir).expect("skill dir");
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Seeded.\n---\n"),
+            )
+            .expect("skill");
+            toml.push_str(&format!(
+                "[skills.{name}]\nsource = \"vendored\"\nrepo = \"{repo}\"\npath = \"{name}\"\nbranch = \"main\"\nrev = \"0123456789abcdef\"\n\n"
+            ));
+        }
+        std::fs::write(self.root().join("skills.toml"), toml).expect("registry");
+        self.command().arg("install").assert().success();
+    }
 }
 
 fn git(repo: &Path, args: &[&str]) {
@@ -93,6 +112,7 @@ fn help_lists_the_full_command_set() {
         .stdout(predicate::str::contains("sync"))
         .stdout(predicate::str::contains("update"))
         .stdout(predicate::str::contains("adopt"))
+        .stdout(predicate::str::contains("upstreams"))
         .stdout(predicate::str::contains("tui"));
 }
 
@@ -112,9 +132,16 @@ fn init_add_status_update_and_json() {
         .assert()
         .success()
         .stdout(predicate::str::contains("added hello"))
-        .stdout(predicate::str::contains("linked hello"));
+        .stdout(predicate::str::contains("linked hello").not());
 
+    // Vendor-only is the default; linking is an explicit second step.
     let dest_link = fixture.dest().join("hello");
+    assert!(!dest_link.exists());
+    fixture
+        .command()
+        .args(["install", "hello"])
+        .assert()
+        .success();
     assert!(dest_link.is_symlink());
 
     fixture
@@ -153,6 +180,108 @@ fn init_add_status_update_and_json() {
         .success()
         .stdout(predicate::str::contains("\"behind\": null"))
         .stdout(predicate::str::contains("\"upstream\": \"current\""));
+}
+
+#[test]
+fn add_links_only_when_asked() {
+    let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+
+    fixture
+        .command()
+        .args(["add", &fixture.url(), "skills/hello", "--link"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("linked hello"));
+    assert!(fixture.dest().join("hello").is_symlink());
+}
+
+#[test]
+fn upstreams_lists_repositories_and_unlinks_one_as_a_group() {
+    let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+    fixture.seed_vendored(&[
+        ("alpha", "git@github.com:sshine/skills.git"),
+        ("beta", "git@github.com:sshine/skills.git"),
+        ("gamma", "git@github.com:anthropics/skills.git"),
+    ]);
+
+    for name in ["alpha", "beta", "gamma"] {
+        assert!(
+            fixture.dest().join(name).is_symlink(),
+            "{name} starts linked"
+        );
+    }
+
+    fixture
+        .command()
+        .arg("upstreams")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("git@github.com:sshine/skills.git"))
+        .stdout(predicate::str::contains(
+            "git@github.com:anthropics/skills.git",
+        ))
+        .stdout(predicate::str::contains("SKILLS"))
+        .stdout(predicate::str::contains("LINKED"));
+
+    fixture
+        .command()
+        .args(["upstreams", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"skills\": 2"))
+        .stdout(predicate::str::contains("\"linked\": 2"));
+
+    // The shorthand names the same repository as the recorded SSH URL.
+    fixture
+        .command()
+        .args(["upstreams", "unlink", "sshine/skills", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would unlink 2 skill(s)"));
+    assert!(fixture.dest().join("alpha").is_symlink());
+
+    fixture
+        .command()
+        .args(["upstreams", "unlink", "sshine/skills"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("unlinked 2 skill(s)"));
+    assert!(!fixture.dest().join("alpha").exists());
+    assert!(!fixture.dest().join("beta").exists());
+    assert!(
+        fixture.dest().join("gamma").is_symlink(),
+        "another upstream keeps its links"
+    );
+    assert!(
+        fixture
+            .root()
+            .join("skills/vendored/alpha/SKILL.md")
+            .is_file(),
+        "unlinking keeps the vendored files"
+    );
+
+    fixture
+        .command()
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alpha"))
+        .stdout(predicate::str::contains("unlinked"));
+}
+
+#[test]
+fn an_unknown_upstream_is_a_clear_error() {
+    let fixture = Fixture::new();
+    fixture.command().arg("init").assert().success();
+
+    fixture
+        .command()
+        .args(["upstreams", "unlink", "nobody/nothing"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("no upstream matching"));
 }
 
 #[test]

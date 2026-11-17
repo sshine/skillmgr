@@ -78,12 +78,16 @@ pub enum Command {
         #[arg(long)]
         rev: Option<String>,
 
+        /// Symlink the added skill(s) into the active directory.
+        #[arg(long, conflicts_with = "no_install")]
+        link: bool,
+
         /// Do not fetch the origin first.
         #[arg(long)]
         no_fetch: bool,
 
-        /// Do not symlink the skill into the active directory.
-        #[arg(long)]
+        /// Do not symlink the added skill(s). This is the default.
+        #[arg(long, hide = true)]
         no_install: bool,
     },
 
@@ -208,6 +212,17 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// View upstream repositories and unlink every skill from one.
+    #[command(alias = "upstream")]
+    Upstreams {
+        #[command(subcommand)]
+        command: Option<UpstreamsCommand>,
+
+        /// Print machine-readable JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Scaffold an authored skill.
     New {
         /// Skill name.
@@ -269,6 +284,19 @@ pub enum Command {
 
     /// Open the interactive dashboard.
     Tui,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UpstreamsCommand {
+    /// Remove the links of every skill vendored from a repository.
+    Unlink {
+        /// Repository as shown by `skillmgr upstreams`.
+        repo: String,
+
+        /// Report what would happen without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

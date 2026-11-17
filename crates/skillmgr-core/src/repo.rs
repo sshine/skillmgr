@@ -194,6 +194,17 @@ impl Repo {
         &self.repo
     }
 
+    /// Whether two references name the same repository regardless of transport.
+    ///
+    /// `sshine/skills`, `https://github.com/sshine/skills.git` and
+    /// `git@github.com:sshine/skills.git` all identify the same upstream.
+    pub fn same_repository(&self, other: &Self) -> bool {
+        self.host == other.host
+            && self.port == other.port
+            && self.namespace == other.namespace
+            && self.repo == other.repo
+    }
+
     /// Path components below the host, excluding the repo name.
     pub fn namespace(&self) -> &[String] {
         &self.namespace

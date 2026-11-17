@@ -437,6 +437,56 @@ fn the_self_skill_is_not_vendored_twice() {
 }
 
 #[test]
+fn upstreams_group_skills_and_unlink_them_collectively() {
+    let fixture = Fixture::new();
+    fixture.commit(
+        "second skill",
+        "skills/goodbye/SKILL.md",
+        "---\nname: goodbye\ndescription: Another demo skill.\n---\n# Goodbye\n",
+    );
+    let ctx = fixture.context();
+    let mut registry = ctx.load().expect("registry");
+    let report = ops::add(
+        &ctx,
+        AddOptions {
+            repo: fixture.url(),
+            path: ".".to_string(),
+            name: None,
+            branch: None,
+            rev: None,
+            no_fetch: false,
+            no_install: true,
+        },
+        &mut registry,
+    )
+    .expect("add");
+    assert_eq!(report.entries.len(), 2);
+    ops::install_skills(&ctx, &registry, &[], false, false).expect("install");
+
+    let groups = ops::upstreams(&ctx, &registry).expect("upstreams");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].repo, fixture.url());
+    assert_eq!(groups[0].skill_count(), 2);
+    assert_eq!(groups[0].linked_count(), 2);
+
+    let report = ops::unlink_upstream(&ctx, &registry, &fixture.url(), false).expect("unlink");
+    assert_eq!(report.names.len(), 2);
+    assert_eq!(report.install.removed.len(), 2);
+    assert!(!ctx.paths.dest().join("hello").exists());
+    assert!(!ctx.paths.dest().join("goodbye").exists());
+    assert!(
+        ctx.paths
+            .skill_dir("vendored", "hello")
+            .join("SKILL.md")
+            .is_file(),
+        "unlinking keeps files"
+    );
+    let registry = ctx.load().expect("registry");
+    assert!(registry.get("hello").is_some(), "unlinking keeps entries");
+    assert!(registry.get("goodbye").is_some());
+}
+
+#[test]
 fn new_register_and_remove() {
     let fixture = Fixture::new();
     let ctx = fixture.context();

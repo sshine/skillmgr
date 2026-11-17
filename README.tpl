@@ -126,7 +126,7 @@ package, so no Rust toolchain enters the build closure:
 ```console
 $ skillmgr init
 $ skillmgr add sshine/skills agentic-playwright-nix
-$ skillmgr add git@github.com:sshine/skills.git   # a whole collection
+$ skillmgr add git@github.com:sshine/skills.git --link   # a whole collection
 $ skillmgr status
 NAME                     ORIGIN    LINK    REV      BEHIND  PATH
 agentic-playwright-nix   vendored  linked  84a1a07  12/3    sshine/skills:agentic-playwright-nix
@@ -135,10 +135,27 @@ $ skillmgr new my-skill --description "What this skill does and when to use it"
 $ skillmgr update
 ```
 
+Adding vendors skills without linking them. Pass `--link` to link the new skills
+immediately, or run `skillmgr install` later. This keeps a whole upstream
+collection out of the active directory until you choose what to use.
+
 `BEHIND` is `repo/path`: commits on the tracked branch since the pin, and how many of
 those touch the skill's directory. `skillmgr update` moves the pin to the branch head;
 `skillmgr sync` re-vendors at the existing pin. `sync --check` and `list --outdated`
 exit non-zero, so they work in CI.
+
+`skillmgr upstreams` groups the registry by source repository:
+
+```console
+$ skillmgr upstreams
+REPO                                    SKILLS  LINKED
+git@github.com:anthropics/skills.git    16      2
+git@github.com:sshine/skills.git        7       1
+```
+
+`skillmgr upstreams unlink <repo>` removes the links for every skill from that
+repository in one step, while keeping the vendored files and registry entries.
+A shorthand such as `sshine/skills` matches the recorded SSH URL.
 
 ## Registry
 
@@ -198,14 +215,20 @@ The dashboard has one table, a detail pane, and every shortcut visible in the ke
 
 ```
 a add   n new   u update (U all)   s sync (S all)   i install (I all)
-x uninstall   o adopt   d remove   e edit   r refresh   / filter   ? help   q quit
+x uninstall   o adopt   d remove   e edit   r refresh   / filter   v upstreams   ? help   q quit
 ```
 
 Destructive actions ask for confirmation. Adding a repository returns immediately:
 the fetch runs in the background with a network meter, and a failure stays in the list
-as a `faulty` entry rather than closing the dialog with an error. Upstream checks also
-run in the background, and the detail pane reads the selected skill's `SKILL.md`,
-origin, pin, link state and behind counts.
+as a `faulty` entry rather than closing the dialog with an error. The add form's link
+toggle starts off, so a new repository is vendored without flooding the active
+directory; turn it on with Space to link the new skills.
+
+Press `v` for the upstream overview. It lists every source repository with its skill
+and link counts. Pressing Enter unlinks every skill from the selected upstream, while
+leaving its vendored files and registry entries in place. Upstream checks also run in
+the background, and the detail pane reads the selected skill's `SKILL.md`, origin,
+pin, link state and behind counts.
 
 On first run, initializing the managed directory also offers to vendor skillmgr's
 own `manage-skills` skill from `sshine/skillmgr`. That skill teaches agents to

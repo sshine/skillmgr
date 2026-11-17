@@ -10,10 +10,11 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Table
 
 use skillmgr_core::git::Upstream;
 use skillmgr_core::install::LinkState;
+use skillmgr_core::ops::UpstreamGroup;
 use skillmgr_core::registry::Origin;
 use skillmgr_core::status::SkillStatus;
 
-use crate::app::{App, ConfirmAction, Form, Mode};
+use crate::app::{App, ConfirmAction, FieldKind, Form, Mode};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -57,6 +58,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 draw_confirm(frame, app, &confirm.prompt, wizard, area);
             }
         }
+        Mode::Upstreams => draw_upstreams(frame, app, area),
         _ => {}
     }
 
@@ -357,6 +359,8 @@ fn draw_keybar(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" refresh   "),
                 Span::styled("/", key_style(app.theme)),
                 Span::raw(" filter   "),
+                Span::styled("v", key_style(app.theme)),
+                Span::raw(" upstreams   "),
                 Span::styled("?", key_style(app.theme)),
                 Span::raw(" help   "),
                 Span::styled("q", key_style(app.theme)),
@@ -374,7 +378,7 @@ fn key_style(theme: Theme) -> Style {
 }
 
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
-    let rect = centered(area, 78, 20);
+    let rect = centered(area, 78, 21);
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -387,19 +391,118 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         Line::from("  i / I      link selected / all          x   unlink selected"),
         Line::from("  d          remove selected              o   adopt active skill"),
         Line::from("  e          edit SKILL.md                r   refresh status"),
-        Line::from("  /          filter                       ?   this help"),
+        Line::from("  v          upstream overview            /   filter"),
         Line::from("  j/k ↑/↓    move                         g/G top / bottom"),
-        Line::from("  Enter      show a summary               q   quit"),
+        Line::from("  Enter      show a summary               ?   this help"),
+        Line::from("  q          quit"),
         Line::from(""),
         Line::from(
             "  Vendored = copied from upstream. Authored = written in the managed directory.",
         ),
         Line::from("  BEHIND is repo/path: commits on the branch, and those touching the skill."),
         Line::from("  A faulty repo failed to resolve; press s or u on it to retry."),
+        Line::from("  In the upstream overview, Enter unlinks every skill from one repository."),
         Line::from(""),
         Line::from("  Press any key to close."),
     ];
     frame.render_widget(Paragraph::new(text).block(block), rect);
+}
+
+fn draw_upstreams(frame: &mut Frame, app: &App, area: Rect) {
+    let height = (app.upstreams.len() as u16 + 8).clamp(10, area.height);
+    let rect = centered(area, 100, height);
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.primary))
+        .title(format!(" upstreams · {} ", app.upstreams.len()));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(2)])
+        .split(inner);
+
+    if app.upstreams.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No upstream repositories yet.")
+                .style(Style::default().fg(app.theme.text_muted))
+                .alignment(Alignment::Center),
+            chunks[0],
+        );
+    } else {
+        let rows: Vec<Row> = app
+            .upstreams
+            .iter()
+            .map(|group| upstream_row(group, app.theme))
+            .collect();
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Min(40),
+                Constraint::Length(8),
+                Constraint::Length(8),
+            ],
+        )
+        .header(
+            Row::new([
+                Cell::from("REPO"),
+                Cell::from("SKILLS"),
+                Cell::from("LINKED"),
+            ])
+            .style(
+                Style::default()
+                    .fg(app.theme.text_muted)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(app.theme.element_bg)
+                .fg(app.theme.primary)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("› ");
+
+        let mut state = TableState::default();
+        state.select(Some(app.upstream_selected));
+        frame.render_stateful_widget(table, chunks[0], &mut state);
+    }
+
+    let hint = if app.upstreams.is_empty() {
+        "Esc close"
+    } else {
+        "Enter unlink every skill from the selected upstream · r refresh · Esc close"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint,
+            Style::default().fg(app.theme.text_muted),
+        )))
+        .alignment(Alignment::Center),
+        chunks[1],
+    );
+}
+
+fn upstream_row(group: &UpstreamGroup, theme: Theme) -> Row<'static> {
+    let linked = group.linked_count();
+    let linked_color = if linked > 0 {
+        theme.success
+    } else {
+        theme.text_muted
+    };
+    Row::new([
+        Cell::from(Span::styled(
+            group.repo.clone(),
+            Style::default().fg(theme.text),
+        )),
+        Cell::from(group.skill_count().to_string()),
+        Cell::from(Span::styled(
+            linked.to_string(),
+            Style::default().fg(linked_color),
+        )),
+    ])
 }
 
 fn draw_form(frame: &mut Frame, app: &App, form: &Form, area: Rect) {
@@ -417,7 +520,18 @@ fn draw_form(frame: &mut Frame, app: &App, form: &Form, area: Rect) {
     for (index, field) in form.fields.iter().enumerate() {
         let active = index == form.active;
         let cursor = if active { "›" } else { " " };
-        let value = if field.value.is_empty() {
+        let value = if field.kind == FieldKind::Toggle {
+            let check = if field.is_on() { "x" } else { " " };
+            let label = if field.is_on() {
+                field.placeholder
+            } else {
+                "vendor only; do not link"
+            };
+            Span::styled(
+                format!("[{check}] {label}"),
+                Style::default().fg(app.theme.text),
+            )
+        } else if field.value.is_empty() {
             Span::styled(field.placeholder, Style::default().fg(app.theme.text_muted))
         } else {
             Span::styled(field.value.clone(), Style::default().fg(app.theme.text))
@@ -432,7 +546,7 @@ fn draw_form(frame: &mut Frame, app: &App, form: &Form, area: Rect) {
                 }),
             ),
             value,
-            if active {
+            if active && field.kind == FieldKind::Text {
                 Span::styled("_", Style::default().fg(app.theme.primary))
             } else {
                 Span::raw("")

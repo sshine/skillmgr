@@ -1,11 +1,12 @@
 //! High-level operations shared by the CLI and TUI.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{Error, Result};
 use crate::git::{Git, Upstream};
-use crate::install::{self, InstallReport};
+use crate::install::{self, InstallReport, LinkState};
 use crate::paths::Paths;
 use crate::registry::{Entry, Origin, Registry};
 use crate::repo::{Repo, normalize_skill_path};
@@ -704,6 +705,145 @@ pub fn remove(
     }
 
     Ok(outcomes)
+}
+
+/// One skill behind an upstream repository, as shown in the upstream overview.
+#[derive(Debug, Clone)]
+pub struct UpstreamSkill {
+    pub name: String,
+    pub path: String,
+    pub link: LinkState,
+    /// Whether this entry is a resolved skill. A repository declaration that has
+    /// not resolved yet has no skill directory and no link.
+    pub is_skill: bool,
+}
+
+/// A group of skills that share one upstream repository.
+#[derive(Debug, Clone)]
+pub struct UpstreamGroup {
+    pub repo: String,
+    pub skills: Vec<UpstreamSkill>,
+}
+
+impl UpstreamGroup {
+    /// The number of resolved skills from this upstream.
+    pub fn skill_count(&self) -> usize {
+        self.skills.iter().filter(|skill| skill.is_skill).count()
+    }
+
+    /// The number of resolved skills that are currently linked.
+    pub fn linked_count(&self) -> usize {
+        self.skills
+            .iter()
+            .filter(|skill| skill.is_skill && skill.link == LinkState::Linked)
+            .count()
+    }
+}
+
+/// Group every registered skill by its upstream repository.
+pub fn upstreams(ctx: &Context, registry: &Registry) -> Result<Vec<UpstreamGroup>> {
+    let mut grouped: BTreeMap<String, Vec<UpstreamSkill>> = BTreeMap::new();
+
+    for entry in registry.entries() {
+        let Some(repo) = entry.repo() else {
+            continue;
+        };
+        let path = entry.repo_path().unwrap_or(".").to_string();
+        let link = if entry.is_skill() {
+            install::inspect(
+                &ctx.paths,
+                &ctx.paths.dest().join(&entry.name),
+                &ctx.paths.skill_dir(&entry.source, &entry.name),
+            )?
+        } else {
+            LinkState::Unlinked
+        };
+        grouped
+            .entry(repo.to_string())
+            .or_default()
+            .push(UpstreamSkill {
+                name: entry.name.clone(),
+                path,
+                link,
+                is_skill: entry.is_skill(),
+            });
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(|(repo, skills)| UpstreamGroup { repo, skills })
+        .collect())
+}
+
+/// The result of unlinking every skill from one upstream.
+#[derive(Debug, Clone)]
+pub struct UnlinkUpstreamReport {
+    pub request: String,
+    /// The recorded upstream strings the request matched.
+    pub matched: Vec<String>,
+    /// The resolved skill names the request selected.
+    pub names: Vec<String>,
+    pub install: InstallReport,
+}
+
+impl UnlinkUpstreamReport {
+    pub fn is_ok(&self) -> bool {
+        self.install.is_ok()
+    }
+}
+
+/// Remove the active-directory links for every skill vendored from `repo`.
+///
+/// Files and registry entries are untouched, so `skillmgr install` can link the
+/// skills again later.
+pub fn unlink_upstream(
+    ctx: &Context,
+    registry: &Registry,
+    repo: &str,
+    dry_run: bool,
+) -> Result<UnlinkUpstreamReport> {
+    let requested = Repo::parse(repo)?;
+    let mut matched = Vec::new();
+    let mut names = Vec::new();
+
+    for entry in registry.entries() {
+        let Some(recorded) = entry.repo() else {
+            continue;
+        };
+        if !upstream_matches(recorded, repo, &requested) {
+            continue;
+        }
+        matched.push(recorded.to_string());
+        if entry.is_skill() {
+            names.push(entry.name.clone());
+        }
+    }
+
+    matched.sort();
+    matched.dedup();
+    if matched.is_empty() {
+        return Err(Error::NotFound(format!(
+            "no upstream matching '{repo}'; run `skillmgr upstreams` to see them"
+        )));
+    }
+
+    let install = if names.is_empty() {
+        InstallReport::default()
+    } else {
+        install::uninstall(&ctx.paths, registry, &names, false, dry_run)?
+    };
+
+    Ok(UnlinkUpstreamReport {
+        request: repo.to_string(),
+        matched,
+        names,
+        install,
+    })
+}
+
+fn upstream_matches(recorded: &str, requested_text: &str, requested: &Repo) -> bool {
+    recorded == requested_text
+        || Repo::parse(recorded).is_ok_and(|recorded| recorded.same_repository(requested))
 }
 
 /// Link selected (or all) registered skills into the active directory.

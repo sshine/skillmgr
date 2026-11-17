@@ -35,6 +35,7 @@
 //!   status      List skills with upstream behind counts
 //!   install     Symlink registered skills into the active directory
 //!   uninstall   Remove managed symlinks from the active directory
+//!   upstreams   View upstream repositories and unlink every skill from one
 //!   new         Scaffold an authored skill
 //!   register    Register an existing directory below skills/
 //!   adopt       Move an existing active skill directory into skills/authored/
@@ -45,6 +46,10 @@
 //!
 //! Run without a command in a terminal to open the dashboard. The TUI uses the same
 //! operations as the subcommands and keeps every shortcut visible in its keybar.
+//! Adding a repository vendors it without linking by default; pass `--link`, or
+//! turn on the link toggle in the add form, to symlink the new skills right away.
+//! The `upstreams` command and the dashboard's upstream overview group skills by
+//! their source repository, and can unlink every skill from one in a single step.
 //!
 //! ## Registry
 //!
@@ -114,7 +119,7 @@ use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
 
-use args::{Args, Command as CliCommand, Shell};
+use args::{Args, Command as CliCommand, Shell, UpstreamsCommand};
 use color::Color;
 use skillmgr_core::git::Upstream;
 use skillmgr_core::ops::{self, AddOptions, Context, RemoveOptions};
@@ -174,8 +179,9 @@ fn dispatch(ctx: &Context, color: &Color, verbose: bool, command: CliCommand) ->
             name,
             branch,
             rev,
+            link,
             no_fetch,
-            no_install,
+            ..
         } => {
             let mut registry = ctx.load()?;
             let report = ops::add(
@@ -187,7 +193,7 @@ fn dispatch(ctx: &Context, color: &Color, verbose: bool, command: CliCommand) ->
                     branch,
                     rev,
                     no_fetch,
-                    no_install,
+                    no_install: !link,
                 },
                 &mut registry,
             )?;
@@ -377,6 +383,8 @@ fn dispatch(ctx: &Context, color: &Color, verbose: bool, command: CliCommand) ->
             Ok(exit_for_report(&report))
         }
 
+        CliCommand::Upstreams { command, json } => upstreams_command(ctx, color, command, json),
+
         CliCommand::New {
             name,
             description,
@@ -488,6 +496,61 @@ fn list_command(
         Ok(ExitCode::from(1))
     } else {
         Ok(ExitCode::SUCCESS)
+    }
+}
+
+fn upstreams_command(
+    ctx: &Context,
+    color: &Color,
+    command: Option<UpstreamsCommand>,
+    json: bool,
+) -> Result<ExitCode> {
+    let registry = ctx.load()?;
+    match command {
+        None => {
+            let groups = ops::upstreams(ctx, &registry)?;
+            if json {
+                println!("{}", output::upstreams_json(&groups));
+            } else {
+                output::print_upstreams(&groups, color);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(UpstreamsCommand::Unlink { repo, dry_run }) => {
+            let report = ops::unlink_upstream(ctx, &registry, &repo, dry_run)?;
+            let verb = if dry_run {
+                color.yellow("would unlink")
+            } else {
+                color.yellow("unlinked")
+            };
+            for name in &report.install.removed {
+                println!("  {verb} {name}");
+            }
+            for conflict in &report.install.conflicts {
+                eprintln!(
+                    "  {} {}: {}",
+                    color.red("conflict"),
+                    conflict.name,
+                    conflict.detail
+                );
+            }
+            let label = report.matched.join(", ");
+            if report.names.is_empty() {
+                println!("  {} no skills to unlink from {label}", color.dim("ok"));
+            } else if report.install.removed.is_empty() {
+                println!("  {} no linked skills from {label}", color.dim("ok"));
+            } else {
+                println!(
+                    "  {verb} {} skill(s) from {label}",
+                    report.install.removed.len()
+                );
+            }
+            if report.is_ok() {
+                Ok(ExitCode::SUCCESS)
+            } else {
+                Ok(ExitCode::from(1))
+            }
+        }
     }
 }
 

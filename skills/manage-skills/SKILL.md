@@ -73,15 +73,21 @@ When the user chooses a skill, install it with skillmgr instead of
 pinned revision, and makes updates reviewable:
 
 ```console
-$ skillmgr add <owner/repo> <path/to/skill>   # one skill
-$ skillmgr add <owner/repo>                   # every SKILL.md in the repo
-$ skillmgr add anthropics/skills skills/skill-creator
+$ skillmgr add <owner/repo> <path/to/skill>          # one skill, vendor only
+$ skillmgr add <owner/repo>                          # every SKILL.md in the repo
+$ skillmgr add anthropics/skills skills/skill-creator --link
 ```
+
+Adding is vendor-only by default: the copy is registered and pinned but not
+linked into the active directory. Pass `--link` when the user wants the skill
+available immediately, or run `skillmgr install <name>` later.
 
 If the repository contains many skills, pass the directory for the one the
 user wants. The path is relative to the repository root. Adding the whole
 repository vendors every skill it discovers, which is usually more than the
-user asked for.
+user asked for. `skillmgr upstreams` shows the source repositories behind the
+registry, and `skillmgr upstreams unlink <repo>` removes every link from one
+repository without deleting its files.
 
 ## Adding a local skill
 

@@ -2,6 +2,7 @@
 
 use skillmgr_core::git::Upstream;
 use skillmgr_core::install::{InstallReport, LinkState};
+use skillmgr_core::ops::UpstreamGroup;
 use skillmgr_core::registry::Origin;
 use skillmgr_core::status::SkillStatus;
 use unicode_width::UnicodeWidthStr;
@@ -52,6 +53,69 @@ pub fn print_statuses(statuses: &[SkillStatus], color: &Color) {
             row[5],
         );
     }
+}
+
+pub fn print_upstreams(groups: &[UpstreamGroup], color: &Color) {
+    let headers = ["REPO", "SKILLS", "LINKED"];
+    let rows: Vec<[String; 3]> = groups
+        .iter()
+        .map(|group| {
+            [
+                group.repo.clone(),
+                group.skill_count().to_string(),
+                group.linked_count().to_string(),
+            ]
+        })
+        .collect();
+
+    let mut widths = headers.map(str::len);
+    for row in &rows {
+        for (index, cell) in row.iter().enumerate() {
+            widths[index] = widths[index].max(cell.width());
+        }
+    }
+
+    println!(
+        "{}  {}  {}",
+        pad(headers[0], widths[0]),
+        pad(headers[1], widths[1]),
+        headers[2],
+    );
+    for row in &rows {
+        println!(
+            "{}  {}  {}",
+            pad(&row[0], widths[0]),
+            pad(&row[1], widths[1]),
+            color.green(&row[2]),
+        );
+    }
+}
+
+pub fn upstreams_json(groups: &[UpstreamGroup]) -> String {
+    let values: Vec<serde_json::Value> = groups
+        .iter()
+        .map(|group| {
+            let skills: Vec<serde_json::Value> = group
+                .skills
+                .iter()
+                .map(|skill| {
+                    serde_json::json!({
+                        "name": skill.name,
+                        "path": skill.path,
+                        "link": link_label(&skill.link),
+                        "skill": skill.is_skill,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "repo": group.repo,
+                "skills": group.skill_count(),
+                "linked": group.linked_count(),
+                "entries": skills,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&values).unwrap_or_else(|_| "[]".to_string())
 }
 
 pub fn print_install_report(report: &InstallReport, color: &Color) {

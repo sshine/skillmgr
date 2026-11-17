@@ -12,7 +12,7 @@ use promptui_core::widgets::spinner::{Spinner, SpinnerStyle};
 use promptui_core::widgets::text_field::{TextField, TextFieldAction};
 
 use skillmgr_core::git::Upstream;
-use skillmgr_core::ops::{self, Context, RemoveOptions};
+use skillmgr_core::ops::{self, Context, RemoveOptions, UpstreamGroup};
 use skillmgr_core::registry::Registry;
 use skillmgr_core::status::SkillStatus;
 use skillmgr_core::wizard::{Answer, State as WizardState};
@@ -29,6 +29,13 @@ pub enum Mode {
     Confirm,
     Help,
     Init,
+    Upstreams,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    Text,
+    Toggle,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +43,42 @@ pub struct Field {
     pub label: &'static str,
     pub placeholder: &'static str,
     pub value: String,
+    pub kind: FieldKind,
+}
+
+impl Field {
+    fn text(label: &'static str, placeholder: &'static str) -> Self {
+        Self {
+            label,
+            placeholder,
+            value: String::new(),
+            kind: FieldKind::Text,
+        }
+    }
+
+    fn switch(label: &'static str, placeholder: &'static str, on: bool) -> Self {
+        Self {
+            label,
+            placeholder,
+            value: if on { "y" } else { "n" }.to_string(),
+            kind: FieldKind::Toggle,
+        }
+    }
+
+    fn is_toggle(&self) -> bool {
+        self.kind == FieldKind::Toggle
+    }
+
+    pub fn is_on(&self) -> bool {
+        matches!(
+            self.value.trim().to_ascii_lowercase().as_str(),
+            "y" | "yes" | "true" | "1"
+        )
+    }
+
+    fn toggle(&mut self) {
+        self.value = if self.is_on() { "n" } else { "y" }.to_string();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +105,7 @@ pub enum Submission {
         name: Option<String>,
         branch: Option<String>,
         rev: Option<String>,
+        link: bool,
     },
     New {
         name: String,
@@ -80,6 +124,7 @@ pub enum ConfirmAction {
     SyncAll,
     InstallAll,
     Uninstall(String),
+    UnlinkUpstream(String),
     Wizard(WizardPrompt),
 }
 
@@ -87,6 +132,7 @@ pub enum ConfirmAction {
 pub struct Confirm {
     pub prompt: String,
     pub action: ConfirmAction,
+    pub return_mode: Mode,
 }
 
 enum WorkerEvent {
@@ -135,6 +181,8 @@ pub struct App {
     pub filter_text: String,
     pub form: Option<Form>,
     pub confirm: Option<Confirm>,
+    pub upstreams: Vec<UpstreamGroup>,
+    pub upstream_selected: usize,
     pub should_quit: bool,
     worker: Option<Receiver<WorkerEvent>>,
     pending_edit: Option<PathBuf>,
@@ -165,6 +213,8 @@ impl App {
             filter_text: String::new(),
             form: None,
             confirm: None,
+            upstreams: Vec::new(),
+            upstream_selected: 0,
             should_quit: false,
             worker: None,
             pending_edit: None,
@@ -434,6 +484,7 @@ impl App {
             Mode::Form => self.handle_form(input),
             Mode::Confirm => self.handle_confirm(input),
             Mode::Help => self.mode = Mode::Normal,
+            Mode::Upstreams => self.handle_upstreams(input),
             Mode::Init => match input {
                 Input::Char('i') => self.perform_init(),
                 Input::Char('q') | Input::Esc => self.should_quit = true,
@@ -478,6 +529,7 @@ impl App {
                 ConfirmAction::InstallAll,
             ),
             Input::Char('x') => self.perform_uninstall_selected(),
+            Input::Char('v') => self.open_upstreams(),
             Input::Char('d') => self.confirm_remove(),
             Input::Char('e') => self.edit_selected(),
             _ => {}
@@ -504,6 +556,73 @@ impl App {
                 self.clamp_selection();
             }
         }
+    }
+
+    fn handle_upstreams(&mut self, input: Input) {
+        match input {
+            Input::Esc | Input::Char('q') | Input::Char('v') => self.mode = Mode::Normal,
+            Input::Char('j') | Input::Down => self.move_upstream_selection(1),
+            Input::Char('k') | Input::Up => self.move_upstream_selection(-1),
+            Input::Char('g') | Input::Home => self.upstream_selected = 0,
+            Input::Char('G') | Input::End => {
+                self.upstream_selected = self.upstreams.len().saturating_sub(1);
+            }
+            Input::Enter | Input::Char('x') => self.confirm_unlink_upstream(),
+            Input::Char('r') => self.open_upstreams(),
+            _ => {}
+        }
+    }
+
+    fn open_upstreams(&mut self) {
+        let groups = match self.ctx.load() {
+            Ok(registry) => match ops::upstreams(&self.ctx, &registry) {
+                Ok(groups) => groups,
+                Err(e) => {
+                    self.error(e.to_string());
+                    return;
+                }
+            },
+            Err(e) => {
+                self.error(e.to_string());
+                return;
+            }
+        };
+        self.upstreams = groups;
+        if self.upstream_selected >= self.upstreams.len() {
+            self.upstream_selected = self.upstreams.len().saturating_sub(1);
+        }
+        self.mode = Mode::Upstreams;
+    }
+
+    fn move_upstream_selection(&mut self, delta: isize) {
+        if self.upstreams.is_empty() {
+            self.upstream_selected = 0;
+            return;
+        }
+        let next = self.upstream_selected as isize + delta;
+        self.upstream_selected = next.clamp(0, self.upstreams.len() as isize - 1) as usize;
+    }
+
+    fn confirm_unlink_upstream(&mut self) {
+        let Some(group) = self.upstreams.get(self.upstream_selected) else {
+            self.notice.show(NoticeLevel::Warn, "no upstream selected");
+            return;
+        };
+        let count = group.skill_count();
+        if count == 0 {
+            self.notice.show(
+                NoticeLevel::Warn,
+                format!("{} has no resolved skills to unlink", group.repo),
+            );
+            return;
+        }
+        self.confirm(
+            format!(
+                "Unlink {count} skill(s) from {}? Files and registry entries stay.",
+                group.repo
+            ),
+            ConfirmAction::UnlinkUpstream(group.repo.clone()),
+        );
     }
 
     fn handle_form(&mut self, input: Input) {
@@ -539,7 +658,16 @@ impl App {
             Input::Delete => {
                 form.fields[form.active].value.clear();
             }
-            Input::Char(c) => {
+            Input::Char(' ') if form.fields[form.active].is_toggle() => {
+                form.fields[form.active].toggle();
+            }
+            Input::Char('y') | Input::Char('Y') if form.fields[form.active].is_toggle() => {
+                form.fields[form.active].value = "y".to_string();
+            }
+            Input::Char('n') | Input::Char('N') if form.fields[form.active].is_toggle() => {
+                form.fields[form.active].value = "n".to_string();
+            }
+            Input::Char(c) if !form.fields[form.active].is_toggle() => {
                 form.fields[form.active].value.push(c);
             }
             _ => {}
@@ -553,10 +681,14 @@ impl App {
                     self.mode = Mode::Normal;
                     return;
                 };
-                self.mode = Mode::Normal;
+                self.mode = confirm.return_mode;
+                let reopen_upstreams = matches!(confirm.action, ConfirmAction::UnlinkUpstream(_));
                 match confirm.action {
                     ConfirmAction::Wizard(prompt) => self.answer_wizard(prompt, true),
                     action => self.run_confirm(action),
+                }
+                if reopen_upstreams && self.registry.is_some() {
+                    self.open_upstreams();
                 }
             }
             Input::Char('n') | Input::Char('N') => {
@@ -564,7 +696,7 @@ impl App {
                     self.mode = Mode::Normal;
                     return;
                 };
-                self.mode = Mode::Normal;
+                self.mode = confirm.return_mode;
                 if let ConfirmAction::Wizard(prompt) = confirm.action {
                     self.answer_wizard(prompt, false);
                 }
@@ -574,7 +706,7 @@ impl App {
                     self.mode = Mode::Normal;
                     return;
                 };
-                self.mode = Mode::Normal;
+                self.mode = confirm.return_mode;
                 if let ConfirmAction::Wizard(prompt) = confirm.action {
                     self.wizard_deferred.insert(prompt.id);
                 }
@@ -592,6 +724,7 @@ impl App {
         self.confirm = Some(Confirm {
             prompt: prompt.into(),
             action,
+            return_mode: self.mode,
         });
         self.mode = Mode::Confirm;
     }
@@ -615,7 +748,8 @@ impl App {
                 name,
                 branch,
                 rev,
-            } => self.begin_add(repo, path, name, branch, rev),
+                link,
+            } => self.begin_add(repo, path, name, branch, rev, link),
             Submission::New { name, description } => {
                 let result = (|| -> skillmgr_core::Result<String> {
                     let mut registry = self.ctx.load()?;
@@ -643,6 +777,7 @@ impl App {
         name: Option<String>,
         branch: Option<String>,
         rev: Option<String>,
+        link: bool,
     ) {
         let mut registry = match self.ctx.load() {
             Ok(registry) => registry,
@@ -651,6 +786,7 @@ impl App {
                 return;
             }
         };
+        let no_install = !link;
         let opts = ops::AddOptions {
             repo,
             path,
@@ -658,7 +794,7 @@ impl App {
             branch,
             rev,
             no_fetch: false,
-            no_install: false,
+            no_install,
         };
         let entry = match ops::declare_repo(&self.ctx, &opts, &mut registry) {
             Ok(entry) => entry,
@@ -678,7 +814,7 @@ impl App {
                 Ok(registry) => registry,
                 Err(e) => return (NoticeLevel::Error, e.to_string(), false),
             };
-            let report = ops::resolve_repo(ctx, &mut registry, &name, true, false);
+            let report = ops::resolve_repo(ctx, &mut registry, &name, true, no_install);
             if report.error.is_some() {
                 (NoticeLevel::Warn, report.summary(), false)
             } else {
@@ -752,6 +888,14 @@ impl App {
                         false,
                     )?;
                     Ok(format!("unlinked {}", report.removed.len()))
+                }
+                ConfirmAction::UnlinkUpstream(repo) => {
+                    let report = ops::unlink_upstream(&self.ctx, &registry, &repo, false)?;
+                    Ok(format!(
+                        "unlinked {} skill(s) from {}",
+                        report.install.removed.len(),
+                        report.matched.join(", ")
+                    ))
                 }
                 ConfirmAction::UpdateAll | ConfirmAction::SyncAll | ConfirmAction::Wizard(_) => {
                     unreachable!()
@@ -1046,49 +1190,22 @@ impl Form {
                 title: "Vendor a skill or repository",
                 kind,
                 fields: vec![
-                    Field {
-                        label: "repo",
-                        placeholder: "owner/repo or git URL",
-                        value: String::new(),
-                    },
-                    Field {
-                        label: "path",
-                        placeholder: "auto: every SKILL.md",
-                        value: String::new(),
-                    },
-                    Field {
-                        label: "name",
-                        placeholder: "optional",
-                        value: String::new(),
-                    },
-                    Field {
-                        label: "branch",
-                        placeholder: "remote HEAD",
-                        value: String::new(),
-                    },
-                    Field {
-                        label: "rev",
-                        placeholder: "branch head",
-                        value: String::new(),
-                    },
+                    Field::text("repo", "owner/repo or git URL"),
+                    Field::text("path", "auto: every SKILL.md"),
+                    Field::text("name", "optional"),
+                    Field::text("branch", "remote HEAD"),
+                    Field::text("rev", "branch head"),
+                    Field::switch("link", "link into the active directory", false),
                 ],
                 active: 0,
-                hint: "Tab next · Enter vendor · Esc cancel",
+                hint: "Tab next · Space toggles link · Enter vendor · Esc cancel",
             },
             FormKind::New => Self {
                 title: "New authored skill",
                 kind,
                 fields: vec![
-                    Field {
-                        label: "name",
-                        placeholder: "lowercase-hyphenated",
-                        value: String::new(),
-                    },
-                    Field {
-                        label: "description",
-                        placeholder: "what and when",
-                        value: String::new(),
-                    },
+                    Field::text("name", "lowercase-hyphenated"),
+                    Field::text("description", "what and when"),
                 ],
                 active: 0,
                 hint: "Tab next · Enter create · Esc cancel",
@@ -1097,16 +1214,8 @@ impl Form {
                 title: "Adopt an active skill",
                 kind,
                 fields: vec![
-                    Field {
-                        label: "name",
-                        placeholder: "skill name",
-                        value: String::new(),
-                    },
-                    Field {
-                        label: "from",
-                        placeholder: "~/.agents/skills/<name>",
-                        value: String::new(),
-                    },
+                    Field::text("name", "skill name"),
+                    Field::text("from", "~/.agents/skills/<name>"),
                 ],
                 active: 0,
                 hint: "Tab next · Enter adopt · Esc cancel",
@@ -1133,12 +1242,20 @@ impl Form {
                 let name = non_empty(value(2));
                 let branch = non_empty(value(3));
                 let rev = non_empty(value(4));
+                let link = match value(5).to_ascii_lowercase().as_str() {
+                    "" | "n" | "no" | "false" | "0" => false,
+                    "y" | "yes" | "true" | "1" => true,
+                    other => {
+                        return Err(format!("link must be y or n, not '{other}'"));
+                    }
+                };
                 Ok(Submission::Add {
                     repo,
                     path,
                     name,
                     branch,
                     rev,
+                    link,
                 })
             }
             FormKind::New => {
