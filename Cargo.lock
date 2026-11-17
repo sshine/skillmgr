@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "skillmgr-cli"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1069,7 +1069,7 @@ dependencies = [
 
 [[package]]
 name = "skillmgr-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "rayon",
  "serde",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "skillmgr-tui"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "promptui-core",
  "ratatui",
