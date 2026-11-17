@@ -34,9 +34,9 @@ You can download prebuilt [static binaries for x86_64 and aarch64 Linux][release
 `git` must be on `PATH`; skillmgr drives it to fetch origins and walk history. The Nix
 package wraps the binary so this is already taken care of.
 
-### NixOS
+### NixOS / Nix system-manager
 
-The flake exports an overlay, so a system configuration can take skillmgr as an
+The flake exports an overlay, so a NixOS configuration can take skillmgr as an
 ordinary attribute of `pkgs`:
 
 ```nix
@@ -71,6 +71,51 @@ ordinary attribute of `pkgs`:
 For a prebuilt binary instead of a source build, use
 `(skillmgr.packages.${system}).skillmgr-bin`. The release is pinned in
 `nix/binary.nix`.
+
+The flake works with [system-manager] too. The example below shows both how to
+install skillmgr with system-manager and how to use the prebuilt `skillmgr-bin`
+package, so no Rust toolchain enters the build closure:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    system-manager = {
+      url = "github:numtide/system-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    skillmgr = {
+      url = "github:sshine/skillmgr";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs =
+    {
+      nixpkgs,
+      system-manager,
+      skillmgr,
+      ...
+    }:
+    {
+      systemConfigs.default = system-manager.lib.makeSystemConfig {
+        modules = [
+          (
+            { pkgs, ... }:
+            {
+              nixpkgs.hostPlatform = "x86_64-linux";
+              environment.systemPackages = [
+                skillmgr.packages.${pkgs.stdenv.hostPlatform.system}.skillmgr-bin
+              ];
+            }
+          )
+        ];
+      };
+    };
+}
+```
 
 ## Quick start
 
@@ -268,8 +313,8 @@ nix profile install github:sshine/skillmgr
 cargo install --path crates/skillmgr-cli
 ```
 
-For NixOS, add the flake as an input and use `pkgs.skillmgr` from the overlay, or
-the prebuilt `skillmgr-bin` package from the release.
+The repository README covers NixOS and Nix system-manager installation, with an
+overlay and a flake example that uses the prebuilt `skillmgr-bin` package.
 
 Every default path can also be redirected from the environment:
 `SKILLMGR_ROOT`, `SKILLMGR_DEST`, `SKILLMGR_CACHE_DIR` and
@@ -284,3 +329,4 @@ environment. This keeps a test or a throwaway run away from the real
 MIT OR Apache-2.0.
 
 [releases]: https://github.com/sshine/skillmgr/releases
+[system-manager]: https://github.com/numtide/system-manager

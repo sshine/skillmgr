@@ -94,8 +94,8 @@
 //! cargo install --path crates/skillmgr-cli
 //! ```
 //!
-//! For NixOS, add the flake as an input and use `pkgs.skillmgr` from the overlay, or
-//! the prebuilt `skillmgr-bin` package from the release.
+//! The repository README covers NixOS and Nix system-manager installation, with an
+//! overlay and a flake example that uses the prebuilt `skillmgr-bin` package.
 //!
 //! Every default path can also be redirected from the environment:
 //! `SKILLMGR_ROOT`, `SKILLMGR_DEST`, `SKILLMGR_CACHE_DIR` and
